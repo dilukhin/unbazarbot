@@ -1,0 +1,15 @@
+[Unit]
+Description=Unbazar Telegram transcription bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/dilukhin/unbazarbot
+EnvironmentFile=/home/dilukhin/unbazarbot/.env
+ExecStart=/home/dilukhin/unbazarbot/.venv/bin/python /home/dilukhin/unbazarbot/bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

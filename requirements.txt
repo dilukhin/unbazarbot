@@ -1,0 +1,5 @@
+aiogram>=3.4,<4
+httpx>=0.26
+python-dotenv>=1.0
+PyYAML>=6.0
+aiosqlite>=0.19

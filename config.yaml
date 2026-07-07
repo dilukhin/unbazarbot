@@ -1,0 +1,36 @@
+﻿telegram:
+  bot_username: unbazarbot
+
+  admin_user_ids:
+    - 936114534
+
+access:
+  default_group_policy: deny
+  allow_private_transcription_for_admins: true
+  allow_private_transcription_for_non_admins: false
+  request_ttl_hours: 72
+  one_time_approval_jobs: 1
+  notify_admins_on_new_request: true
+
+limits:
+  max_audio_seconds: 600
+  max_file_mb: 20
+  admin_notify_cooldown_seconds: 300
+
+stt:
+  provider: routerai
+  default_model: whisper_turbo
+  language: ru
+
+  models:
+    whisper_turbo:
+      provider_model: openai/whisper-large-v3-turbo
+      description: дешёвый основной вариант
+
+    whisper_large:
+      provider_model: openai/whisper-large-v3
+      description: более качественный Whisper-кандидат
+
+    qwen_flash:
+      provider_model: qwen/qwen3-asr-flash-2026-02-10
+      description: кандидат для русского и шумного аудио

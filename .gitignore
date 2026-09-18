@@ -20,3 +20,6 @@ __pycache__/
 .agent-safety/
 
 .DS_Store
+
+# Local deployment configuration
+/config.yaml

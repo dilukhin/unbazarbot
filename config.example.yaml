@@ -1,8 +1,8 @@
-﻿telegram:
-  bot_username: unbazarbot
+telegram:
+  bot_username: your_bot_username
 
-  admin_user_ids:
-    - 936114534
+  # Заполните своим Telegram user_id только в локальном config.yaml.
+  admin_user_ids: []
 
 access:
   default_group_policy: deny

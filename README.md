@@ -2,6 +2,21 @@
 
 Telegram-бот для расшифровки голосовых сообщений и аудиофайлов через RouterAI. Бот работает в личных чатах и группах, поддерживает ручное распознавание по команде `/tr`, автоматическое распознавание новых voice/audio в разрешенных группах, кеширование результатов и админское подтверждение доступа для групп.
 
+## Документация и источники истины
+
+Основная изменяемая документация проекта хранится в GitHub:
+
+- [docs/project_baseline_ru.md](docs/project_baseline_ru.md) — устойчивые границы и инварианты;
+- [docs/architecture_ru.md](docs/architecture_ru.md) — архитектура;
+- [docs/security_model_ru.md](docs/security_model_ru.md) — модель доступа, секреты и приватность;
+- [docs/current_status_ru.md](docs/current_status_ru.md) — текущее состояние и известные расхождения;
+- [docs/work_plan_ru.md](docs/work_plan_ru.md) — ближайший план;
+- [github_project_bootstrap.md](github_project_bootstrap.md) — bootstrap для ChatGPT Project Sources;
+- [chatgpt_project_instructions_seed_ru.md](chatgpt_project_instructions_seed_ru.md) — seed Project Instructions;
+- [AGENTS.md](AGENTS.md) — правила локального агента.
+
+Для факта реализации приоритет имеет актуальный код `main`; roadmap и старые диалоги не являются доказательством наличия функции.
+
 ## Возможности
 
 - Расшифровка `voice`, `audio` и аудиофайлов, отправленных как `document`.

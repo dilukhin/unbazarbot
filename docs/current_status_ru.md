@@ -41,6 +41,7 @@ Production lifecycle через systemd следует считать настр
 4. Нет automated test suite и CI, подтверждённых текущим деревом репозитория.
 5. Нет rate/cost caps по группе/пользователю.
 6. Runtime bundle `dist/projects/dilukhin__unbazarbot.md` в `github-connector-knowledge` на момент проверки отсутствовал; bootstrap обязан уметь работать без него.
+7. Публичный tracked `config.yaml` сейчас содержит реальный Telegram `admin_user_id`. Это не credential, но это runtime/персональная привязка; предпочтительно перейти на tracked `config.example.yaml` и локальный ignored `config.yaml`.
 
 ## Документационный контур
 

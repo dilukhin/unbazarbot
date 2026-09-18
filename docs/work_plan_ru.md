@@ -12,6 +12,8 @@ https://github.com/dilukhin/unbazarbot/issues/3
 
 Сделать первым, потому что публичный tracked `config.yaml` сейчас содержит локальную Telegram admin-привязку.
 
+Подготовлено в ветке `fix/3-local-runtime-config`: example/local split и безопасная инструкция миграции. Следующий шаг — проверка и слияние PR; миграция VPS остаётся отдельным действием. После принятия изменений перейти к каркасу #4.
+
 Результат:
 - tracked `config.example.yaml` без реальных user/chat IDs;
 - локальный `config.yaml` исключён из Git;

@@ -129,6 +129,27 @@ DB_PATH=data/bot.sqlite3
 
 ## Настройка `config.yaml`
 
+В Git хранится только `config.example.yaml`. Создайте локальный рабочий файл:
+
+Linux/macOS:
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+Windows PowerShell:
+
+```powershell
+Copy-Item config.example.yaml config.yaml
+```
+
+Заполните `telegram.bot_username` и `telegram.admin_user_ids` своими значениями.
+Список администраторов в шаблоне пуст; доступ посторонних в личке выключен.
+Не заменяйте существующий рабочий конфиг примером. Перед первым обновлением
+старого развёртывания выполните [инструкцию миграции](docs/config_migration_ru.md).
+`CONFIG_PATH` продолжает поддерживать альтернативный путь. Автоматической
+подстановки шаблона при отсутствии рабочего файла нет.
+
 Основные разделы:
 
 - `telegram.bot_username` - username бота без `@` или с ним, как принято в вашей конфигурации.
@@ -142,8 +163,7 @@ DB_PATH=data/bot.sqlite3
 ```yaml
 telegram:
   bot_username: your_bot_username
-  admin_user_ids:
-    - 123456789
+  admin_user_ids: []  # Укажите свой Telegram user_id в локальном файле
 
 access:
   allow_private_transcription_for_admins: true
@@ -266,6 +286,7 @@ journalctl -u unbazarbot -f
 
 Уже исключено через `.gitignore`:
 
+- `config.yaml` - локальная конфигурация развёртывания;
 - `.env` и `.env.*` - секреты и локальные настройки;
 - `data/` - SQLite runtime-данные;
 - `logs/` - логи;
@@ -303,7 +324,7 @@ python -m pip install --upgrade -r requirements.txt
 
 ### `Config file not found: config.yaml`
 
-Проверьте `CONFIG_PATH` в `.env` и наличие `config.yaml`.
+Проверьте `CONFIG_PATH` в `.env` и наличие `config.yaml`. Для новой установки скопируйте `config.example.yaml` и заполните настройки; для существующей восстановите сохранённый рабочий конфиг по инструкции миграции.
 
 ### Группа не получает доступ
 

@@ -2,9 +2,9 @@
 
 Проверено: 2026-09-18  
 Ветка: `main`  
-Проверенный HEAD до документационного обновления: `dc0dbba33d51cb88f595a31617e98e647349de2c`.
+Проверенный baseline перед текущим status/plan update: `6f2964200e2ba26689ec96975fcb24cc4524bc11`.
 
-Этот файл — mutable status; SHA здесь допустим и должен обновляться при существенных изменениях.
+Этот файл — подробный mutable status. Краткий обзор находится в корневом `STATUS.md`.
 
 ## Реализовано в GitHub main
 
@@ -31,18 +31,41 @@
 - group approval был получен администратором;
 - после approval `/tr` reply успешно распознавал аудио.
 
-Production lifecycle через systemd следует считать настроенным только после отдельной runtime-проверки; наличие example unit в Git не доказывает, что service включён на VPS.
+Не считать подтверждённым без отдельного runtime smoke:
+- systemd lifecycle/reboot;
+- production auto-mode после `/auto_on`;
+- SQLite backup/restore.
 
-## Известные ограничения / расхождения
+## ChatGPT Project
 
-1. В текущем `main` нет отдельного LLM post-processing для пунктуации и абзацев.
-2. В текущем `main` нет конфигурируемого запрета MP3; существующая media validation проверяет прежде всего duration/size.
-3. Auto mode действует на весь `chat_id`, не на отдельный forum topic.
-4. Нет automated test suite и CI, подтверждённых текущим деревом репозитория.
-5. Нет rate/cost caps по группе/пользователю.
-6. Runtime bundle `dist/projects/dilukhin__unbazarbot.md` в `github-connector-knowledge` на момент проверки отсутствовал; bootstrap обязан уметь работать без него.
-7. Публичный tracked `config.yaml` сейчас содержит реальный Telegram `admin_user_id`. Это не credential, но это runtime/персональная привязка; предпочтительно перейти на tracked `config.example.yaml` и локальный ignored `config.yaml`.
+Пользователь выполнил настройку Project Sources и Project Instructions.
+
+В текущем проектном контексте:
+- доступен `github_project_bootstrap.md` как Project Source;
+- активны дополненные Project Instructions, включая правила перехода в новый диалог и execution continuity;
+- GitHub-файл `chatgpt_project_instructions_seed_ru.md` также содержит эти дополнения.
+
+Mutable документация остаётся в GitHub и не дублируется в Project Sources.
+
+## Известные ограничения / открытые issues
+
+- [#1](https://github.com/dilukhin/unbazarbot/issues/1) — нет отдельного LLM post-processing для пунктуации и абзацев.
+- [#2](https://github.com/dilukhin/unbazarbot/issues/2) — нет конфигурируемого запрета MP3/media format policy.
+- [#3](https://github.com/dilukhin/unbazarbot/issues/3) — публичный tracked `config.yaml` содержит runtime/персональную admin-привязку; требуется example/local split.
+- [#4](https://github.com/dilukhin/unbazarbot/issues/4) — нет automated test suite и CI.
+- [#5](https://github.com/dilukhin/unbazarbot/issues/5) — production systemd/health/log/backup/dependency lifecycle не верифицирован как устойчивый.
+- [#6](https://github.com/dilukhin/unbazarbot/issues/6) — нет rate/cost caps и защиты от параллельной повторной оплаты.
+
+## Принятые ограничения, не являющиеся текущим дефектом
+
+- Auto mode действует на весь `chat_id`, не на отдельный forum topic; это поведение пользователь пока принял.
+- Старые сообщения не сканируются по истории: поддерживается `/tr` reply.
+- Тяжёлый локальный ASR не планируется на текущей малой VPS без отдельного решения.
+- Runtime bundle `dist/projects/dilukhin__unbazarbot.md` в `github-connector-knowledge` может отсутствовать; bootstrap обязан работать без него.
 
 ## Документационный контур
 
-С 2026-09-18 основная mutable документация должна жить в GitHub. Project Sources ChatGPT должен содержать минимальный bootstrap, а не копии status/roadmap.
+- корневой `STATUS.md` — краткий текущий снимок;
+- этот файл — подробный current status;
+- `docs/work_plan_ru.md` — порядок выполнения issues;
+- baseline/architecture/security — устойчивые решения.

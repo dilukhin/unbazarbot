@@ -6,6 +6,7 @@ Telegram-бот для расшифровки голосовых сообщен�
 
 Основная изменяемая документация проекта хранится в GitHub:
 
+- [STATUS.md](STATUS.md) — краткий текущий статус и открытые задачи;
 - [docs/project_baseline_ru.md](docs/project_baseline_ru.md) — устойчивые границы и инварианты;
 - [docs/architecture_ru.md](docs/architecture_ru.md) — архитектура;
 - [docs/security_model_ru.md](docs/security_model_ru.md) — модель доступа, секреты и приватность;

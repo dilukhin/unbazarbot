@@ -12,6 +12,7 @@ GitHub — основной изменяемый источник истины �
 - [chatgpt_project_setup_ru.md](chatgpt_project_setup_ru.md) — настройка ChatGPT Project.
 
 В корне:
+- `STATUS.md` — краткий оперативный снимок состояния и links на активные issues;
 - `github_project_bootstrap.md` — единственный рекомендуемый mutable-aware bootstrap для Project Sources;
 - `chatgpt_project_instructions_seed_ru.md` — seed поля Project Instructions;
 - `AGENTS.md` — правила локального агента;

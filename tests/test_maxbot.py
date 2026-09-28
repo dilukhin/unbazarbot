@@ -5,8 +5,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import httpx
+import wave
 
-from maxbot.app import MaxBot, audio_attachment, create_app, infer_format, media_url
+from maxbot.app import MaxBot, audio_attachment, check_duration, create_app, infer_format, media_url
 from maxbot.config import MaxConfig, load_max_config
 from maxbot.storage import MaxStorage
 
@@ -143,6 +144,17 @@ class MaxStorageTests(unittest.IsolatedAsyncioTestCase):
                 wrong = await client.post("/max/webhook", json=body, headers={"X-Max-Bot-Api-Secret": "wrong"})
                 accepted = await client.post("/max/webhook", json=body, headers={"X-Max-Bot-Api-Secret": "secret-token"})
                 self.assertEqual((missing.status_code, wrong.status_code, accepted.status_code), (403, 403, 200))
+
+    async def test_actual_duration_checked_before_paid_job(self):
+        path = Path(self.tmp.name) / "one-second.wav"
+        with wave.open(str(path), "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(8000)
+            audio.writeframes(b"\x00\x00" * 8000)
+        await check_duration(path, 2)
+        with self.assertRaisesRegex(ValueError, "длительности"):
+            await check_duration(path, 0)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import hmac
 import logging
+import math
 import os
 from pathlib import Path
 import tempfile
@@ -58,6 +59,29 @@ def infer_format(attachment: dict, content_type: str) -> str:
     if not result:
         raise ValueError("Формат аудио не поддерживается")
     return result
+
+
+async def check_duration(path: Path, max_seconds: int) -> None:
+    """Fail closed if the actual media duration cannot be measured."""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=10)
+        seconds = float(stdout.strip())
+        if process.returncode != 0 or not math.isfinite(seconds) or seconds <= 0:
+            raise ValueError("Не удалось проверить длительность аудио")
+        if seconds > max_seconds:
+            raise ValueError("Аудио превышает лимит длительности")
+    except (FileNotFoundError, ValueError, asyncio.TimeoutError) as exc:
+        if isinstance(exc, asyncio.TimeoutError):
+            process.kill()
+            await process.wait()
+        if isinstance(exc, ValueError):
+            raise
+        raise ValueError("Не удалось проверить длительность аудио") from exc
 
 
 class MaxBot:
@@ -163,6 +187,7 @@ class MaxBot:
         reserved = False
         try:
             path, fmt = await self.download(attachment)
+            await check_duration(path, self.config.max_seconds)
             if not await self.storage.reserve(chat_id, mid, model, private):
                 return  # another event owns this job or permission has been exhausted
             reserved = True
@@ -273,7 +298,11 @@ def create_app() -> FastAPI:
     if len(secret) < 5:
         raise ValueError("MAX_WEBHOOK_SECRET is too short")
     config = load_max_config(os.getenv("MAX_CONFIG_PATH", "max_config.yaml"))
-    storage = MaxStorage(os.getenv("MAX_DB_PATH", "data/maxbot.sqlite3"))
+    db_path = Path(os.getenv("MAX_DB_PATH", "data/maxbot.sqlite3"))
+    telegram_db = Path(os.getenv("DB_PATH", "data/bot.sqlite3"))
+    if db_path.resolve() == telegram_db.resolve():
+        raise ValueError("MAX_DB_PATH must be separate from the Telegram database")
+    storage = MaxStorage(db_path)
     bot = MaxBot(config, storage, token, routerai_key)
 
     async def worker():

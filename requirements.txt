@@ -3,3 +3,5 @@ httpx>=0.26
 python-dotenv>=1.0
 PyYAML>=6.0
 aiosqlite>=0.19
+fastapi>=0.110,<1
+uvicorn>=0.29,<1

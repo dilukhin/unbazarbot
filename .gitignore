@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+max_config.yaml
 
 data/
 logs/

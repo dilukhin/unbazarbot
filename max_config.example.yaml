@@ -1,0 +1,19 @@
+# Copy to max_config.yaml and configure outside Git. Never put real IDs or secrets here.
+max:
+  admin_user_ids: []
+  # Check actual attachment hosts in authenticated MAX events before enabling a host.
+  download_hosts:
+    - vu.okcdn.ru
+    - fu.oneme.ru
+limits:
+  max_file_mb: 20
+  max_audio_seconds: 600
+stt:
+  routerai_base_url: https://routerai.ru/api/v1
+  default_model: whisper_turbo
+  language: ru
+  models:
+    whisper_turbo:
+      provider_model: openai/whisper-large-v3-turbo
+    whisper_large:
+      provider_model: openai/whisper-large-v3

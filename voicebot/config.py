@@ -79,6 +79,10 @@ def load_config(path: str | Path) -> AppConfig:
     limits = raw.get("limits") or {}
     stt = raw.get("stt") or {}
 
+    if access.get("allow_private_transcription_for_non_admins", False):
+        raise ValueError("Управление личным доступом требует access.allow_private_transcription_for_non_admins: false. "
+                         "Разрешения обычных пользователей теперь выдаются в меню /access.")
+
     models_raw = stt.get("models") or {}
     models: dict[str, ModelConfig] = {}
     for alias, model_raw in models_raw.items():
@@ -123,3 +127,4 @@ def load_config(path: str | Path) -> AppConfig:
         routerai_base_url=str(stt.get("routerai_base_url") or "https://routerai.ru/api/v1"),
         models=models,
     )
+

@@ -9,6 +9,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
 
+from voicebot.access_ui import router as access_router
 from voicebot.config import load_config
 from voicebot.db import Database
 from voicebot.handlers import AppContext, router
@@ -40,6 +41,7 @@ async def main() -> None:
 
     bot = Bot(token=token, default=DefaultBotProperties(parse_mode=None))
     dp = Dispatcher()
+    dp.include_router(access_router)
     dp.include_router(router)
 
     logging.info("Starting @%s", config.bot_username or "unknown")
@@ -58,3 +60,4 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     asyncio.run(main())
+

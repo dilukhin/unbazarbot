@@ -50,6 +50,12 @@ Telegram reply
 - auto/private media handler;
 - событием добавления бота в группу.
 
+`voicebot/access_ui.py` содержит меню `/access`, списки, карточки, поиск и ввод
+пояснения к личной заявке. Этот обработчик подключается перед общими обработчиками.
+`voicebot/access_store.py` расширяет хранилище отдельными разрешениями пользователей,
+миграцией схемы и транзакциями решений. Состояние ввода хранится в памяти aiogram,
+а заявки и разрешения — в SQLite.
+
 ### Config
 
 `voicebot/config.py` преобразует YAML в typed application config. Модели задаются alias -> provider_model. Новая STT-модель не должна требовать изменения Telegram handlers, если её protocol совместим с текущим transcriber.
@@ -59,6 +65,7 @@ Telegram reply
 `voicebot/db.py` содержит runtime schema и операции над:
 - admins;
 - groups;
+- private_users;
 - access requests;
 - transcription jobs;
 - cache/audit data.
@@ -116,3 +123,4 @@ new media in group
 - rate/cost policy — отдельный policy слой перед provider call.
 
 Такие расширения не должны смешивать access decision, Telegram transport и внешнее распознавание в одну функцию.
+

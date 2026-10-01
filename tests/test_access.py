@@ -13,7 +13,9 @@ from aiogram.client.session.base import BaseSession
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.methods import SendMessage
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.methods import EditMessageReplyMarkup, SendMessage
+import aiosqlite
 from aiogram.types import CallbackQuery, Chat, Message, Update, User, Voice
 
 from voicebot.access_ui import (AccessInput, access_callback, access_command, admin_search,
@@ -45,6 +47,23 @@ class RecordingSession(BaseSession):
 
     async def stream_content(self, *args, **kwargs):
         yield b''
+
+
+def create_legacy_database(path):
+    with sqlite3.connect(path) as conn:
+        conn.executescript('''
+            CREATE TABLE groups(chat_id INTEGER PRIMARY KEY,title TEXT,username TEXT,status TEXT,
+              approval_type TEXT,approved_by_user_id INTEGER,approved_at TEXT,revoked_by_user_id INTEGER,
+              revoked_at TEXT,default_model TEXT,auto_enabled INTEGER,remaining_jobs INTEGER,
+              created_at TEXT,updated_at TEXT);
+            INSERT INTO groups VALUES(-1,'Старая группа',NULL,'approved','forever',1,'date',NULL,NULL,'test',1,0,'date','date');
+            CREATE TABLE access_requests(id TEXT PRIMARY KEY,chat_id INTEGER,chat_title TEXT,
+              requester_user_id INTEGER,requester_username TEXT,reason TEXT,status TEXT,
+              created_at TEXT,updated_at TEXT,decided_by_user_id INTEGER,decided_at TEXT);
+            INSERT INTO access_requests VALUES('old',-1,'Старая группа',2,NULL,'old','approved_forever','date','date',1,'date');
+            INSERT INTO groups VALUES(-2,'Отозванная группа',NULL,'revoked',NULL,1,'date',1,'date','test',0,0,'date','date');
+            INSERT INTO access_requests VALUES('stale',-2,'Отозванная группа',2,NULL,'old','pending','date','date',NULL,NULL);
+        ''')
 
 
 def config():
@@ -287,20 +306,7 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_safe_migration_of_legacy_group_data(self):
         old_path = Path(self.tmp.name) / 'legacy.sqlite3'
-        with sqlite3.connect(old_path) as conn:
-            conn.executescript('''
-                CREATE TABLE groups(chat_id INTEGER PRIMARY KEY,title TEXT,username TEXT,status TEXT,
-                  approval_type TEXT,approved_by_user_id INTEGER,approved_at TEXT,revoked_by_user_id INTEGER,
-                  revoked_at TEXT,default_model TEXT,auto_enabled INTEGER,remaining_jobs INTEGER,
-                  created_at TEXT,updated_at TEXT);
-                INSERT INTO groups VALUES(-1,'Старая группа',NULL,'approved','forever',1,'date',NULL,NULL,'test',1,0,'date','date');
-                CREATE TABLE access_requests(id TEXT PRIMARY KEY,chat_id INTEGER,chat_title TEXT,
-                  requester_user_id INTEGER,requester_username TEXT,reason TEXT,status TEXT,
-                  created_at TEXT,updated_at TEXT,decided_by_user_id INTEGER,decided_at TEXT);
-                INSERT INTO access_requests VALUES('old',-1,'Старая группа',2,NULL,'old','approved_forever','date','date',1,'date');
-                INSERT INTO groups VALUES(-2,'Отозванная группа',NULL,'revoked',NULL,1,'date',1,'date','test',0,0,'date','date');
-                INSERT INTO access_requests VALUES('stale',-2,'Отозванная группа',2,NULL,'old','pending','date','date',NULL,NULL);
-            ''')
+        create_legacy_database(old_path)
         db = Database(old_path)
         await db.open()
         try:
@@ -314,6 +320,66 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await db.access_subject('group', -1))['auto_enabled'], 1)
         finally:
             await db.close()
+
+    async def test_interrupted_migration_rolls_back_schema_and_retries_safely(self):
+        path = Path(self.tmp.name) / 'interrupted.sqlite3'
+        create_legacy_database(path)
+        db = Database(path)
+        execute = aiosqlite.Connection.execute
+        async def interrupt_after_column(conn, sql, *args, **kwargs):
+            result = await execute(conn, sql, *args, **kwargs)
+            if 'ADD COLUMN subject_type' in sql:
+                raise RuntimeError('Прерывание миграции')
+            return result
+        try:
+            with patch.object(aiosqlite.Connection, 'execute', interrupt_after_column):
+                with self.assertRaisesRegex(RuntimeError, 'Прерывание миграции'):
+                    await db.open()
+            await db.close()
+            with sqlite3.connect(path) as conn:
+                self.assertNotIn('revision', [row[1] for row in conn.execute('PRAGMA table_info(groups)')])
+                self.assertNotIn('subject_type', [row[1] for row in conn.execute('PRAGMA table_info(access_requests)')])
+                self.assertIsNone(conn.execute("SELECT name FROM sqlite_master WHERE name='private_users'").fetchone())
+                self.assertEqual(conn.execute("SELECT status FROM access_requests WHERE id='stale'").fetchone()[0], 'pending')
+            await db.open()
+            self.assertEqual((await db.get_request('stale')).status, 'superseded')
+            self.assertEqual((await db.access_subject('group', -1))['status'], 'approved')
+            await db.upsert_config_admins({1})
+            self.assertIsNone(await db.decide_request('stale', 'approve_forever', 1, 1))
+            self.assertEqual((await db.access_subject('group', -2))['status'], 'revoked')
+        finally:
+            await db.close()
+
+    async def test_saved_decisions_notify_even_if_keyboard_edit_fails(self):
+        make_request = self.session.make_request
+        async def refuse_edit(bot, method, timeout=None):
+            if isinstance(method, EditMessageReplyMarkup):
+                raise TelegramBadRequest(method, 'message cannot be edited')
+            return await make_request(bot, method, timeout)
+        for target_id, action in ((2, 'request'), (-3, 'legacy'), (4, 'revoke'), (5, 'restore')):
+            with self.subTest(action=action):
+                kind = 'group' if action == 'legacy' else 'user'
+                req = await self.request(kind, target_id)
+                if action in {'revoke', 'restore'}:
+                    await self.db.decide_access_request(req.id, 'approve_forever', 1)
+                    row = await self.db.access_subject(kind, target_id)
+                    if action == 'restore':
+                        await self.db.change_access(kind, target_id, 'revoke', 1, row['revision'])
+                        row = await self.db.access_subject(kind, target_id)
+                    decision = 'revoke' if action == 'revoke' else 'approve_forever'
+                    data = f'acc:apply:{kind}:{target_id}:{row["revision"]}:{decision}'
+                else:
+                    data = f'apf:{req.id}' if action == 'legacy' else f'acc:decide:{req.id}:approve_forever'
+                self.session.calls.clear()
+                with patch.object(self.session, 'make_request', refuse_edit):
+                    if action == 'legacy':
+                        await cb_approve_forever(self.callback(data), self.ctx, self.bot)
+                    else:
+                        await access_callback(self.callback(data), self.ctx, self.bot, self.state)
+                self.assertTrue(any(isinstance(call, SendMessage) and call.chat_id == target_id
+                                    for call in self.session.calls))
+                self.assertEqual((await self.db.access_subject(kind, target_id))['status'],
+                                 'revoked' if action == 'revoke' else 'approved')
 
     async def test_admin_search_is_private_and_searches_russian(self):
         await self.db.ensure_private_user(2, 'АлЕКСЕЙ', 'alex')

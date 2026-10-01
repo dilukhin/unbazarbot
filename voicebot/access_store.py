@@ -17,7 +17,8 @@ class AccessStore:
 
     async def init_access_schema(self):
         await self.db.create_function("casefold", 1, lambda value: str(value or "").casefold())
-        await self.db.executescript("""
+        async with self.access_transaction() as conn:
+            await conn.execute("""
             CREATE TABLE IF NOT EXISTS private_users(
               user_id INTEGER PRIMARY KEY,
               title TEXT,
@@ -31,25 +32,24 @@ class AccessStore:
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL
             );
-        """)
-        legacy_requests = False
-        for table, column, definition in (
-            ("groups", "revision", "INTEGER NOT NULL DEFAULT 0"),
-            ("access_requests", "subject_type", "TEXT NOT NULL DEFAULT 'group'"),
-        ):
-            rows = await (await self.db.execute(f"PRAGMA table_info({table})")).fetchall()
-            if column not in {row["name"] for row in rows}:
-                legacy_requests = legacy_requests or table == "access_requests"
-                await self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-        if legacy_requests:
-            # Старые заявки не содержат поколения разрешения. Сохраняем только
-            # заявки ожидающих групп; после прежнего разрешения или отзыва они устарели.
-            await self.db.execute("""UPDATE access_requests SET status='superseded'
-                WHERE status='pending' AND subject_type='group' AND chat_id IN
-                (SELECT chat_id FROM groups WHERE status!='pending')""")
-        await self.db.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_private_pending
-            ON access_requests(subject_type, chat_id) WHERE status='pending' AND subject_type='user'""")
-        await self.db.commit()
+            """)
+            legacy_requests = False
+            for table, column, definition in (
+                ("groups", "revision", "INTEGER NOT NULL DEFAULT 0"),
+                ("access_requests", "subject_type", "TEXT NOT NULL DEFAULT 'group'"),
+            ):
+                rows = await (await conn.execute(f"PRAGMA table_info({table})")).fetchall()
+                if column not in {row["name"] for row in rows}:
+                    legacy_requests = legacy_requests or table == "access_requests"
+                    await conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            if legacy_requests:
+                # Изменения схемы и закрытие старых заявок подтверждаются вместе.
+                # После сбоя можно повторить миграцию, не оставляя старые кнопки действующими.
+                await conn.execute("""UPDATE access_requests SET status='superseded'
+                    WHERE status='pending' AND subject_type='group' AND chat_id IN
+                    (SELECT chat_id FROM groups WHERE status!='pending')""")
+            await conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_private_pending
+                ON access_requests(subject_type, chat_id) WHERE status='pending' AND subject_type='user'""")
 
     @asynccontextmanager
     async def access_transaction(self):

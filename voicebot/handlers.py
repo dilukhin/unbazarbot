@@ -18,7 +18,8 @@ from aiogram.types import (
 )
 
 from .access_ui import (admin_callback, decision_keyboard, entry_keyboard, home_keyboard,
-                        keyboard, notify_request, request_keyboard, request_text, show_page)
+                        keyboard, notify_access_result, notify_request, remove_decision_buttons,
+                        request_keyboard, request_text, show_page)
 from .config import AppConfig
 from .db import Database, AccessRequest
 from .media import MediaRef, download_media_to_temp, extract_media, guess_audio_format
@@ -448,12 +449,11 @@ async def legacy_decision(callback: CallbackQuery, ctx: AppContext, bot: Bot, de
         await callback.answer("Заявка уже обработана или устарела.", show_alert=True)
         return
     await callback.answer("Решение сохранено.")
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.answer("Решение сохранено. Управление доступом: /access.")
-    with contextlib.suppress(Exception):
-        await bot.send_message(req.chat_id, "Доступ группы отклонён." if decision == "reject" else
+    await notify_access_result(bot, req.chat_id, "Доступ группы отклонён." if decision == "reject" else
                                "Доступ группы разрешён однократно." if decision == "approve_once" else
                                "Доступ группы разрешён постоянно. Автоматический режим включается отдельно.")
+    await remove_decision_buttons(callback.message)
+    await callback.message.answer("Решение сохранено. Управление доступом: /access.")
 
 
 @router.callback_query(F.data.startswith("ap1:"))

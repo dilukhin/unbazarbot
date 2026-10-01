@@ -4,6 +4,7 @@ import contextlib
 
 from aiogram import F, Router
 from aiogram.enums import ChatType
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -64,6 +65,17 @@ async def notify_request(bot, ctx, req):
     for chat_id in await ctx.db.admin_private_chats():
         with contextlib.suppress(Exception):
             await bot.send_message(chat_id, request_text(req), reply_markup=decision_keyboard(req))
+
+
+async def notify_access_result(bot, target_id, text):
+    with contextlib.suppress(TelegramAPIError):
+        await bot.send_message(target_id, text)
+
+
+async def remove_decision_buttons(message):
+    # Решение уже сохранено. Ошибка редактирования старого сообщения не отменяет его.
+    with contextlib.suppress(TelegramAPIError):
+        await message.edit_reply_markup(reply_markup=None)
 
 
 async def admin_callback(callback, ctx):
@@ -234,14 +246,13 @@ async def access_callback(callback: CallbackQuery, ctx, bot, state: FSMContext):
             if not req:
                 await callback.message.answer('Заявка уже обработана или устарела.')
                 return
-            await callback.message.edit_reply_markup(reply_markup=None)
-            await callback.message.answer('Решение сохранено.')
             text = ('Доступ отклонён.' if parts[3] == 'reject' else
                     'Доступ разрешён на одно распознавание.' if parts[3] == 'approve_once' else
                     'Личный доступ разрешён. Можно отправлять голосовые сообщения.' if req.subject_type == 'user' else
                     'Доступ группы разрешён. Используйте /tr в ответ на аудио. Автоматический режим включается отдельно.')
-            with contextlib.suppress(Exception):
-                await bot.send_message(req.chat_id, text)
+            await notify_access_result(bot, req.chat_id, text)
+            await remove_decision_buttons(callback.message)
+            await callback.message.answer('Решение сохранено.')
         elif action in {'confirm', 'apply'} and len(parts) == 6:
             kind, target_id, revision, decision = parts[2], int(parts[3]), int(parts[4]), parts[5]
             if kind not in {'user', 'group'} or decision not in {'revoke', 'approve_forever'}:
@@ -260,10 +271,9 @@ async def access_callback(callback: CallbackQuery, ctx, bot, state: FSMContext):
                 if not changed:
                     await callback.message.answer('Состояние изменилось или действие недоступно. Откройте карточку заново.')
                     return
-                await callback.message.edit_reply_markup(reply_markup=None)
+                await notify_access_result(bot, target_id, 'Доступ отозван.' if decision == 'revoke' else 'Доступ разрешён.')
+                await remove_decision_buttons(callback.message)
                 await show_card(callback.message, ctx, kind, target_id)
-                with contextlib.suppress(Exception):
-                    await bot.send_message(target_id, 'Доступ отозван.' if decision == 'revoke' else 'Доступ разрешён.')
         else:
             raise ValueError()
     except (ValueError, IndexError):

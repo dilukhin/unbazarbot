@@ -1,8 +1,8 @@
 # Unbazarbot — текущее состояние
 
-Проверено: 2026-09-18  
+Проверено: 2026-10-01  
 Ветка: `main`  
-Проверенный baseline перед текущим status/plan update: `6f2964200e2ba26689ec96975fcb24cc4524bc11`.
+Меню доступа и проверки включены в изменения запроса на слияние #10.
 
 Этот файл — подробный mutable status. Краткий обзор находится в корневом `STATUS.md`.
 
@@ -15,7 +15,9 @@
 - SQLite persistence.
 - Заявка группы при добавлении бота.
 - Admin approval: one-time / forever / reject.
-- `/requests`, `/groups`, `/revoke`.
+- `/access`: заявки людей и групп, поиск, страницы и карточки.
+- `/requests`, `/groups`, `/revoke` с подтверждением отзыва.
+- Отдельные личные разрешения обычных пользователей, без административных прав.
 - Ручная расшифровка старого доступного сообщения через `/tr` reply.
 - `/auto_on` / `/auto_off` для всего Telegram `chat_id`.
 - Private media path с access policy.
@@ -52,7 +54,7 @@ Mutable документация остаётся в GitHub и не дублир
 - [#1](https://github.com/dilukhin/unbazarbot/issues/1) — нет отдельного LLM post-processing для пунктуации и абзацев.
 - [#2](https://github.com/dilukhin/unbazarbot/issues/2) — нет конфигурируемого запрета MP3/media format policy.
 - [#3](https://github.com/dilukhin/unbazarbot/issues/3) — публичный tracked `config.yaml` содержит runtime/персональную admin-привязку; требуется example/local split.
-- [#4](https://github.com/dilukhin/unbazarbot/issues/4) — нет automated test suite и CI.
+- [#4](https://github.com/dilukhin/unbazarbot/issues/4) — добавлены автоматические проверки доступа и GitHub Actions; остаётся покрыть прочие сценарии, ограничения форматов и форматирование.
 - [#5](https://github.com/dilukhin/unbazarbot/issues/5) — production systemd/health/log/backup/dependency lifecycle не верифицирован как устойчивый.
 - [#6](https://github.com/dilukhin/unbazarbot/issues/6) — нет rate/cost caps и защиты от параллельной повторной оплаты.
 
@@ -71,13 +73,15 @@ Mutable документация остаётся в GitHub и не дублир
 - baseline/architecture/security — устойчивые решения.
 
 
-## Подготовлено: меню доступа Telegram (2026-09-30)
+## Меню доступа Telegram (#10, 2026-10-01)
 
-Изменения для ветки `feat/telegram-access-menu` содержат заявки обычных пользователей, независимый
-личный доступ, меню `/access`, поиск и страницы, подтверждение отзыва и защиту старых
-кнопок. Проверки находятся в `tests/test_access.py`; добавлен процесс GitHub Actions.
-Существующая база обновляется с сохранением разрешений групп.
+Реализованы заявки обычных пользователей, независимый личный доступ, меню `/access`,
+поиск и страницы, подтверждение отзыва и защита старых кнопок. Проверки находятся
+в `tests/test_access.py`; добавлен процесс GitHub Actions. Существующая база обновляется
+с сохранением разрешений групп. Миграция новой схемы и закрытие прежних заявок
+выполняются вместе в одной транзакции. Ошибка редактирования старого сообщения
+не мешает уведомлению пользователя о сохранённом решении.
 
-Это состояние подготовленной ветки, а не подтверждение слияния в `main` или
-обновления рабочего VPS. Подробности: [управление доступом](access_management_ru.md).
+Обновление рабочего VPS ещё не выполнялось. Подробности:
+[управление доступом](access_management_ru.md).
 Работа Max в отдельном запросе на слияние #9 и перенос конфигурации в #7 не изменены.

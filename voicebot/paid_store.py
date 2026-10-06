@@ -24,17 +24,32 @@ class PaidStore:
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_paid_time ON paid_calls(started_at)')
             await conn.execute('CREATE TABLE IF NOT EXISTS paid_meta(key TEXT PRIMARY KEY)')
             if not await (await conn.execute("SELECT 1 FROM paid_meta WHERE key='legacy_import'")).fetchone():
-                await conn.execute("""INSERT OR IGNORE INTO paid_calls
+                await conn.execute("""INSERT OR IGNORE INTO paid_calls(file_unique_id,model_alias,job_id,chat_id,user_id,started_at,reserved_seconds,state,cost)
                     SELECT file_unique_id,model_alias,id,COALESCE(chat_id,0),user_id,
                     created_at,0,'interrupted',cost FROM transcription_jobs
                     WHERE status IN ('running','error','interrupted')
                     AND file_unique_id IS NOT NULL AND model_alias IS NOT NULL""")
                 await conn.execute("INSERT INTO paid_meta VALUES('legacy_import')")
+            for table,column,definition in (
+                ('transcription_jobs','formatted_transcript','TEXT'),
+                ('transcription_jobs','formatter_signature','TEXT'),
+                ('transcription_jobs','formatter_cost','REAL'),
+                ('transcription_jobs','formatter_error','TEXT'),
+                ('paid_calls','formatter_cost','REAL'),
+                ('paid_calls','formatter_state',"TEXT NOT NULL DEFAULT 'skipped'"),
+                ('paid_calls','access_revision','INTEGER'),
+                ('paid_calls','private_chat','INTEGER NOT NULL DEFAULT 0'),
+                ('paid_calls','auto_required','INTEGER NOT NULL DEFAULT 0'),
+            ):
+                columns=await (await conn.execute(f'PRAGMA table_info({table})')).fetchall()
+                if column not in {row['name'] for row in columns}:
+                    await conn.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
 
     async def recover_paid_calls(self):
         # Вызывать только после получения блокировки единственного процесса.
         async with self.access_transaction() as conn:
-            await conn.execute("UPDATE transcription_jobs SET status='interrupted',error='Процесс прерван; исход оплаты неизвестен' WHERE id IN (SELECT job_id FROM paid_calls WHERE state='running')")
+            await conn.execute("UPDATE transcription_jobs SET status='interrupted',error='Процесс прерван; исход оплаты неизвестен' WHERE transcript IS NULL AND id IN (SELECT job_id FROM paid_calls WHERE state='running')")
+            await conn.execute("UPDATE paid_calls SET formatter_state='interrupted' WHERE formatter_state='running'")
             await conn.execute("UPDATE paid_calls SET state='interrupted' WHERE state='running'")
 
     async def reserve_paid_call(self, *, job_id, chat_id, user_id, private,
@@ -50,12 +65,14 @@ class PaidStore:
         async with self.access_transaction() as conn:
             if private:
                 admin = await self._admin_in_transaction(conn, user_id)
-                row = await (await conn.execute('SELECT status FROM private_users WHERE user_id=?', (user_id,))).fetchone()
+                row = await (await conn.execute('SELECT status,revision FROM private_users WHERE user_id=?', (user_id,))).fetchone()
                 allowed = allow_private_admins if admin else bool(row and row['status']=='approved')
                 once = False
+                revision = None if admin else row['revision'] if row else None
             else:
-                row = await (await conn.execute('SELECT status,remaining_jobs,auto_enabled FROM groups WHERE chat_id=?', (chat_id,))).fetchone()
+                row = await (await conn.execute('SELECT status,remaining_jobs,auto_enabled,revision FROM groups WHERE chat_id=?', (chat_id,))).fetchone()
                 once = bool(row and row['status']=='approved_once' and row['remaining_jobs']>0)
+                revision = row['revision'] + int(once) if row else None
                 allowed = bool(row and (row['status']=='approved' or once))
                 if require_auto:
                     allowed = bool(row and row['status']=='approved' and row['auto_enabled'])
@@ -82,17 +99,47 @@ class PaidStore:
                 used = (await (await conn.execute(f'SELECT COALESCE(SUM(reserved_seconds),0) FROM paid_calls WHERE {condition} AND started_at>=?', params+[day])).fetchone())[0]
                 if used+seconds > daily*60:
                     return f'Достигнут суточный лимит минут {label}. Сброс — в 00:00 UTC.'
-            await conn.execute('INSERT INTO paid_calls VALUES(?,?,?,?,?,?,?,?,NULL)',
+            await conn.execute('''INSERT INTO paid_calls(file_unique_id,model_alias,job_id,chat_id,user_id,
+                started_at,reserved_seconds,state,cost) VALUES(?,?,?,?,?,?,?,?,NULL)''',
                                (file_unique_id,model_alias,job_id,chat_id,user_id,stamp.isoformat(),seconds,'running'))
             if once:
                 await conn.execute("UPDATE groups SET remaining_jobs=remaining_jobs-1,status=CASE WHEN remaining_jobs=1 THEN 'revoked' ELSE 'approved_once' END,revision=revision+1 WHERE chat_id=?", (chat_id,))
+            await conn.execute('UPDATE paid_calls SET access_revision=?,private_chat=?,auto_required=? WHERE job_id=?',
+                               (revision,int(private),int(require_auto),job_id))
             return None
+
+    async def formatting_access_allowed(self,job_id,allow_private_admins):
+        async with self.access_transaction() as conn:
+            call=await (await conn.execute('SELECT * FROM paid_calls WHERE job_id=?',(job_id,))).fetchone()
+            if not call or call['state']!='running':
+                return False
+            if call['private_chat']:
+                if await self._admin_in_transaction(conn,call['user_id']):
+                    return allow_private_admins
+                row=await (await conn.execute('SELECT status,revision FROM private_users WHERE user_id=?',(call['user_id'],))).fetchone()
+                return bool(row and row['status']=='approved' and row['revision']==call['access_revision'])
+            row=await (await conn.execute('SELECT revision,auto_enabled FROM groups WHERE chat_id=?',(call['chat_id'],))).fetchone()
+            return bool(row and row['revision']==call['access_revision'] and
+                        (not call['auto_required'] or row['auto_enabled']))
 
     async def finish_paid_call(self, job_id, state, cost=None):
         if state not in {'done','error','interrupted'}:
             raise ValueError('Invalid payment state')
         async with self.access_transaction() as conn:
-            await conn.execute('UPDATE paid_calls SET state=?,cost=? WHERE job_id=? AND state=\'running\'', (state,cost,job_id))
+            await conn.execute('UPDATE paid_calls SET state=?,cost=COALESCE(?,cost),formatter_state=CASE WHEN formatter_state=\'running\' THEN \'interrupted\' ELSE formatter_state END WHERE job_id=? AND state=\'running\'', (state,cost,job_id))
+
+    async def save_raw_for_formatting(self,job_id,text,cost,duration,signature):
+        async with self.access_transaction() as conn:
+            await conn.execute("UPDATE transcription_jobs SET status='done',transcript=?,cost=?,duration_seconds=?,formatter_signature=? WHERE id=?",
+                               (text,cost,duration,signature,job_id))
+            await conn.execute("UPDATE paid_calls SET cost=?,formatter_state='running' WHERE job_id=?", (cost,job_id))
+
+    async def finish_formatting(self,job_id,result):
+        async with self.access_transaction() as conn:
+            await conn.execute('UPDATE transcription_jobs SET formatted_transcript=?,formatter_cost=?,formatter_error=? WHERE id=?',
+                               (result.text if result.accepted else None,result.cost,result.error,job_id))
+            await conn.execute("UPDATE paid_calls SET state='done',formatter_cost=?,formatter_state=? WHERE job_id=?",
+                               (result.cost,'done' if result.accepted else 'error' if result.attempted else 'skipped',job_id))
 
     async def complete_paid_job(self, job_id, text, cost, duration_seconds):
         async with self.access_transaction() as conn:
@@ -104,7 +151,7 @@ class PaidStore:
         stamp = (at or datetime.now(timezone.utc)).astimezone(timezone.utc)
         day = stamp.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         rows = await (await self.db.execute('''SELECT chat_id,model_alias,COUNT(*) AS calls,
-            SUM(reserved_seconds) AS seconds,SUM(COALESCE(cost,0)) AS known_cost,
-            SUM(cost IS NULL) AS unknown_cost FROM paid_calls WHERE started_at>=?
+            SUM(reserved_seconds) AS seconds,SUM(COALESCE(cost,0)+COALESCE(formatter_cost,0)) AS known_cost,
+            SUM(cost IS NULL OR (formatter_state IN ('running','interrupted','done','error') AND formatter_cost IS NULL)) AS unknown_cost FROM paid_calls WHERE started_at>=?
             GROUP BY chat_id,model_alias ORDER BY chat_id,model_alias''', (day,))).fetchall()
         return [dict(row) for row in rows]

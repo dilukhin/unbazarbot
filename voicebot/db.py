@@ -152,18 +152,12 @@ class Database(AccessStore, PaidStore):
 
     async def upsert_config_admins(self, admin_user_ids: set[int]) -> None:
         now = utcnow()
-        for user_id in admin_user_ids:
-            await self.db.execute(
-                """
-                INSERT INTO admins(user_id, is_active, created_at, updated_at)
-                VALUES(?, 1, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                  is_active=1,
-                  updated_at=excluded.updated_at
-                """,
-                (user_id, now, now),
-            )
-        await self.db.commit()
+        async with self.access_transaction() as conn:
+            await conn.execute('UPDATE admins SET is_active=0')
+            for user_id in admin_user_ids:
+                await conn.execute('''INSERT INTO admins(user_id,is_active,created_at,updated_at)
+                    VALUES(?,1,?,?) ON CONFLICT(user_id) DO UPDATE SET is_active=1,updated_at=excluded.updated_at''',
+                    (user_id,now,now))
 
     async def is_admin(self, user_id: int | None) -> bool:
         if not user_id:
@@ -393,5 +387,4 @@ class Database(AccessStore, PaidStore):
             """,
             (actor_user_id, action, chat_id, target_id, json.dumps(details, ensure_ascii=False), utcnow()),
         )
-
 

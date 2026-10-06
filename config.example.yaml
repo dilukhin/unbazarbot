@@ -45,3 +45,14 @@ budget:
   daily_minutes_chat: 60
   daily_minutes_user: 30
   max_inflight: 2
+
+# Дополнительный платный вызов: включается явно в рабочей конфигурации.
+formatter:
+  enabled: false
+  default_model: punctuation
+  max_input_chars: 12000
+  max_output_tokens: 4096
+  timeout_seconds: 30
+  models:
+    punctuation:
+      provider_model: openai/gpt-4o

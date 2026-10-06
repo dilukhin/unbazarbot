@@ -101,7 +101,7 @@ Linux/macOS:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install -r requirements.lock
 ```
 
 Windows PowerShell:
@@ -110,7 +110,7 @@ Windows PowerShell:
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install -r requirements.lock
 ```
 
 ## Настройка `.env`
@@ -210,6 +210,14 @@ python bot.py
 
 В репозитории есть пример unit-файла: `systemd/unbazarbot.service.example`.
 
+Перед установкой примера адаптируйте его к своему серверу: `User` должен быть
+существующим непривилегированным пользователем, пути — соответствовать
+подготовленной ссылке `current`, её окружению и внешнему `EnvironmentFile`.
+Пользователь должен читать конфигурацию и владеть рабочей базой. Для уже
+работающего бота сохраните прежнюю службу и следуйте процедуре обновления,
+не заменяйте её примером вслепую. Пример использует схему `/opt/unbazarbot/current`;
+каталог `/home/dilukhin/unbazarbot` ниже — прежний пример размещения исходников.
+
 Пример установки на Linux-сервере, если проект лежит в `/home/dilukhin/unbazarbot`:
 
 ```bash
@@ -292,23 +300,13 @@ journalctl -u unbazarbot -f
 - `__pycache__/`, `*.pyc` - Python cache;
 - `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/` - локальные кеши инструментов.
 
-## Обновление зависимостей
+## Обновление работающего бота
 
-Для обновления зависимостей вручную:
-
-```bash
-source .venv/bin/activate
-python -m pip install --upgrade -r requirements.txt
-```
-
-На Windows PowerShell:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade -r requirements.txt
-```
-
-После обновления проверьте запуск бота и совместимость выбранных моделей RouterAI.
+Не меняйте зависимости действующего окружения на месте. Новый выпуск готовится
+отдельно с `requirements.lock` и проверяется до остановки службы. Обновление
+запускается оператором на сервере либо через `ssh_relay` с рабочего компьютера.
+Автоматическое применение новых версий не включено.
+[Процедура и восстановление](docs/update_procedure_ru.md).
 
 ## Диагностика
 
@@ -361,7 +359,7 @@ python -m pip install --upgrade -r requirements.txt
 Проверки не вызывают реальные Telegram и RouterAI:
 
 ```bash
-python -m pip install -r requirements.txt pytest
+python -m pip install -r requirements.lock
 python -m compileall -q bot.py voicebot tests
 python -m pytest -q
 ```
@@ -371,3 +369,17 @@ python -m pytest -q
 попытки и известную стоимость. Одноразовое разрешение резервируется до
 RouterAI. Неизвестный исход оплаты не повторяется автоматически.
 [Полное описание](docs/budget_ru.md).
+
+## Версия и сервер
+
+`/about` показывает назначение, версию и ревизию бота. `/system` показывает
+администратору в личном чате hostname, ОС, Python, зависимости, PID, время работы,
+каталог и пути рабочих файлов. Секреты и содержимое файлов не выводятся.
+Неопределённые ревизия и способ запуска прямо обозначаются.
+
+## Пунктуация и абзацы
+
+Раздел `formatter` включает один дополнительный платный запрос к выбранной
+текстовой модели. По умолчанию выключен. Исходный текст всегда сохраняется;
+при ошибке или изменении слов возвращается исходный вариант. `/tr_raw [модель]`
+в ответ на голосовое получает его без оформления. [Описание](docs/formatter_ru.md).

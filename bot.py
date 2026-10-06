@@ -15,6 +15,7 @@ from voicebot.db import Database
 from voicebot.handlers import AppContext, router
 from voicebot.stt_routerai import RouterAITranscriber
 from voicebot.runtime import InstanceLock
+from voicebot.formatter import RouterAIFormatter
 
 
 async def main() -> None:
@@ -40,7 +41,8 @@ async def main() -> None:
         await db.upsert_config_admins(config.admin_user_ids)
 
         transcriber = RouterAITranscriber(routerai_key, base_url=config.routerai_base_url)
-        ctx = AppContext(config=config, db=db, transcriber=transcriber)
+        formatter = RouterAIFormatter(routerai_key,config.formatter,config.routerai_base_url) if config.formatter.enabled else None
+        ctx = AppContext(config=config, db=db, transcriber=transcriber,formatter=formatter)
 
         bot = Bot(token=token, default=DefaultBotProperties(parse_mode=None))
         dp = Dispatcher()
@@ -49,8 +51,8 @@ async def main() -> None:
 
         logging.info("Starting @%s", config.bot_username or "unknown")
         try:
-            # Drop old pending updates from experiments so the bot starts cleanly.
-            await bot.delete_webhook(drop_pending_updates=True)
+            # Сохранить сообщения, накопленные во время обновления.
+            await bot.delete_webhook(drop_pending_updates=False)
             await dp.start_polling(bot, ctx=ctx)
         finally:
             await db.close()
@@ -63,5 +65,3 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     asyncio.run(main())
-
-

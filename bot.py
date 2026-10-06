@@ -14,6 +14,7 @@ from voicebot.config import load_config
 from voicebot.db import Database
 from voicebot.handlers import AppContext, router
 from voicebot.stt_routerai import RouterAITranscriber
+from voicebot.runtime import InstanceLock
 
 
 async def main() -> None:
@@ -32,26 +33,28 @@ async def main() -> None:
         raise RuntimeError(f"Config file not found: {config_path}")
 
     config = load_config(config_path)
-    db = Database(db_path)
-    await db.open()
-    await db.upsert_config_admins(config.admin_user_ids)
+    with InstanceLock(os.getenv('LOCK_PATH', db_path + '.lock')):
+        db = Database(db_path)
+        await db.open()
+        await db.recover_paid_calls()
+        await db.upsert_config_admins(config.admin_user_ids)
 
-    transcriber = RouterAITranscriber(routerai_key, base_url=config.routerai_base_url)
-    ctx = AppContext(config=config, db=db, transcriber=transcriber)
+        transcriber = RouterAITranscriber(routerai_key, base_url=config.routerai_base_url)
+        ctx = AppContext(config=config, db=db, transcriber=transcriber)
 
-    bot = Bot(token=token, default=DefaultBotProperties(parse_mode=None))
-    dp = Dispatcher()
-    dp.include_router(access_router)
-    dp.include_router(router)
+        bot = Bot(token=token, default=DefaultBotProperties(parse_mode=None))
+        dp = Dispatcher()
+        dp.include_router(access_router)
+        dp.include_router(router)
 
-    logging.info("Starting @%s", config.bot_username or "unknown")
-    try:
-        # Drop old pending updates from experiments so the bot starts cleanly.
-        await bot.delete_webhook(drop_pending_updates=True)
-        await dp.start_polling(bot, ctx=ctx)
-    finally:
-        await db.close()
-        await bot.session.close()
+        logging.info("Starting @%s", config.bot_username or "unknown")
+        try:
+            # Drop old pending updates from experiments so the bot starts cleanly.
+            await bot.delete_webhook(drop_pending_updates=True)
+            await dp.start_polling(bot, ctx=ctx)
+        finally:
+            await db.close()
+            await bot.session.close()
 
 
 if __name__ == "__main__":
@@ -60,4 +63,5 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     asyncio.run(main())
+
 

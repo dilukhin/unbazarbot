@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import contextlib
+import asyncio
+import logging
 
 from aiogram import Bot, F, Router
 from aiogram.enums import ChatType, ChatMemberStatus
@@ -157,6 +159,7 @@ async def transcribe_message_media(
     ctx: AppContext,
     bot: Bot,
     model_alias: str,
+    require_auto: bool = False,
 ) -> None:
     media = extract_media(target_message)
     if not media:
@@ -192,21 +195,27 @@ async def transcribe_message_media(
     )
 
     tmp_path: Path | None = None
+    paid_started = False
+    completed = False
     try:
         tmp_path, telegram_file_path = await download_media_to_temp(bot, media)
         audio_format = guess_audio_format(media, telegram_file_path, model_cfg.audio_format)
-        user_id = message.from_user.id if message.from_user else None
-        if is_private_chat(message):
-            permitted = (ctx.config.allow_private_transcription_for_admins if await ctx.db.is_admin(user_id)
-                         else await ctx.db.private_user_allowed(user_id))
-        else:
-            group = await ctx.db.get_group(message.chat.id)
-            permitted = bool(group and (group.status == "approved" or
-                             (group.status == "approved_once" and group.remaining_jobs > 0)))
-        if not permitted:
-            await ctx.db.fail_job(job_id, "Доступ отозван до отправки аудио")
-            await message.answer("Доступ отозван. Аудио не отправлено на распознавание.")
+        if tmp_path.stat().st_size > ctx.config.max_file_mb * 1024 * 1024:
+            raise ValueError('Скачанный файл превышает лимит размера')
+        reason = await ctx.db.reserve_paid_call(
+            job_id=job_id, chat_id=message.chat.id,
+            user_id=message.from_user.id if message.from_user else None,
+            private=is_private_chat(message), file_unique_id=media.file_unique_id,
+            model_alias=model_alias, seconds=media.duration or ctx.config.max_audio_seconds,
+            limits=ctx.config.budget,
+            allow_private_admins=ctx.config.allow_private_transcription_for_admins,
+            require_auto=require_auto,
+        )
+        if reason:
+            await ctx.db.fail_job(job_id, reason)
+            await message.answer(reason)
             return
+        paid_started = True
         result = await ctx.transcriber.transcribe(
             tmp_path,
             model=model_cfg.provider_model,
@@ -214,9 +223,8 @@ async def transcribe_message_media(
             language=ctx.config.language,
             temperature=ctx.config.temperature,
         )
-        await ctx.db.finish_job(job_id, result.text, result.cost, result.duration_seconds)
-        if is_group_chat(message):
-            await ctx.db.consume_one_time_job_if_needed(message.chat.id)
+        await ctx.db.complete_paid_job(job_id, result.text, result.cost, result.duration_seconds)
+        completed = True
 
         meta = f"Расшифровка · модель: {model_alias}"
         if result.duration_seconds is not None:
@@ -229,9 +237,18 @@ async def transcribe_message_media(
         for part in chunks(result.text):
             await message.answer((meta if first else "") + part, reply_to_message_id=target_message.message_id)
             first = False
+    except asyncio.CancelledError:
+        if paid_started and not completed:
+            await asyncio.shield(ctx.db.finish_paid_call(job_id, 'interrupted'))
+            await asyncio.shield(ctx.db.fail_job(job_id, 'Процесс прерван; исход оплаты неизвестен'))
+        raise
     except Exception as exc:
-        await ctx.db.fail_job(job_id, str(exc))
-        await message.answer(f"Не удалось распознать аудио: {exc}")
+        if not completed:
+            await ctx.db.fail_job(job_id, type(exc).__name__)
+            if paid_started:
+                await ctx.db.finish_paid_call(job_id, 'error')
+        logging.error('Ошибка задания распознавания: %s', type(exc).__name__)
+        await message.answer('Не удалось завершить распознавание. Администратор может проверить состояние задания; платный вызов автоматически не повторяется.')
     finally:
         if tmp_path:
             with contextlib.suppress(Exception):
@@ -269,10 +286,31 @@ async def cmd_help(message: Message, ctx: AppContext) -> None:
         "/auto_on, /auto_off — авто-распознавание новых voice в группе\n\n"
         "Админские в личке:\n"
         "/access — управление доступом людей и групп\n"
+        "/stats — расход и лимиты за сутки UTC\n"
         "/requests — заявки людей и групп\n"
         "/groups — список групп\n"
         "/revoke <chat_id> — отозвать доступ"
     )
+
+
+@router.message(Command("stats"))
+async def cmd_stats(message: Message, ctx: AppContext) -> None:
+    if not await require_admin(message, ctx):
+        return
+    rows = await ctx.db.usage_today()
+    calls = sum(row['calls'] for row in rows)
+    minutes = sum(row['seconds'] for row in rows) / 60
+    known = sum(row['known_cost'] for row in rows)
+    unknown = sum(row['unknown_cost'] for row in rows)
+    limits = ctx.config.budget
+    lines = [f'За сутки UTC: {calls} новых попыток; зарезервировано {minutes:g} мин из {limits.daily_minutes_total}.',
+             f'Сообщённая провайдером стоимость: {known:g}; без сведений об оплате: {unknown}.',
+             f'Лимиты минут: чат {limits.daily_minutes_chat}, человек {limits.daily_minutes_user}.',
+             f'Запросов в минуту: чат {limits.requests_per_minute_chat}, человек {limits.requests_per_minute_user}.']
+    for row in rows:
+        lines.append(f"Чат {row['chat_id']}, модель {row['model_alias']}: {row['calls']} попыток, {row['seconds']/60:g} мин.")
+    for part in chunks('\n'.join(lines)):
+        await message.answer(part)
 
 
 @router.message(Command("status"))
@@ -412,7 +450,7 @@ async def media_auto_or_private(message: Message, ctx: AppContext, bot: Bot) -> 
         if not group or not group.auto_enabled or group.status != "approved":
             return
         model_alias = group.default_model or ctx.config.default_model
-        await transcribe_message_media(message, message, ctx, bot, model_alias)
+        await transcribe_message_media(message, message, ctx, bot, model_alias, require_auto=True)
 
 
 @router.my_chat_member()

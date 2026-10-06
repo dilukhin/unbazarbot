@@ -35,3 +35,13 @@ stt:
       provider_model: qwen/qwen3-asr-flash-2026-02-10
       description: кандидат для русского и шумного аудио
 
+
+# Лимиты применяются к новым платным вызовам; кеш их не расходует.
+# Суточный период начинается в 00:00 UTC. Ошибки не возвращают резерв минут.
+budget:
+  requests_per_minute_chat: 4
+  requests_per_minute_user: 2
+  daily_minutes_total: 120
+  daily_minutes_chat: 60
+  daily_minutes_user: 30
+  max_inflight: 2

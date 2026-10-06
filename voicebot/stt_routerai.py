@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import base64
+import math
 
 import httpx
 
@@ -55,15 +56,19 @@ class RouterAITranscriber:
             )
 
         if response.status_code >= 400:
-            raise RuntimeError(f"RouterAI HTTP {response.status_code}: {response.text[:1000]}")
+            raise RuntimeError(f"RouterAI HTTP {response.status_code}")
 
         data = response.json()
+        if not isinstance(data, dict):
+            raise RuntimeError('RouterAI returned an invalid response')
         text = self._extract_text(data)
         if not text:
-            raise RuntimeError(f"RouterAI returned no text: {data!r}")
+            raise RuntimeError('RouterAI returned no text')
 
-        usage = data.get("usage") if isinstance(data, dict) else None
-        cost = self._as_float((usage or {}).get("cost") or (usage or {}).get("total_cost") or data.get("cost"))
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        cost = next((self._as_float(value) for value in
+                     (usage.get('cost'), usage.get('total_cost'), data.get('cost'))
+                     if self._as_float(value) is not None), None)
         duration = self._as_float(
             (usage or {}).get("duration_seconds")
             or (usage or {}).get("duration")
@@ -96,6 +101,7 @@ class RouterAITranscriber:
         if value is None:
             return None
         try:
-            return float(value)
+            result = float(value)
+            return result if math.isfinite(result) and result >= 0 else None
         except (TypeError, ValueError):
             return None

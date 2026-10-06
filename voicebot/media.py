@@ -32,34 +32,7 @@ def extract_media(message: Message) -> MediaRef | None:
             file_name=None,
             mime_type=message.voice.mime_type,
         )
-    if message.audio:
-        return MediaRef(
-            file_id=message.audio.file_id,
-            file_unique_id=message.audio.file_unique_id,
-            kind="audio",
-            duration=message.audio.duration,
-            file_size=message.audio.file_size,
-            file_name=message.audio.file_name,
-            mime_type=message.audio.mime_type,
-        )
-    if message.document:
-        mime_type = message.document.mime_type or ""
-        file_name = message.document.file_name
-        looks_audio = mime_type.startswith("audio/") or (file_name and file_name.lower().endswith((
-            ".ogg", ".oga", ".opus", ".mp3", ".wav", ".m4a", ".mp4", ".webm", ".flac", ".aac"
-        )))
-        if looks_audio:
-            return MediaRef(
-                file_id=message.document.file_id,
-                file_unique_id=message.document.file_unique_id,
-                kind="document_audio",
-                duration=None,
-                file_size=message.document.file_size,
-                file_name=file_name,
-                mime_type=message.document.mime_type,
-            )
     return None
-
 
 def guess_audio_format(media: MediaRef, telegram_file_path: str | None, forced: str | None = None) -> str:
     if forced:

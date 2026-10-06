@@ -74,7 +74,7 @@ SQLite хранится вне Git.
 
 ### Media
 
-`voicebot/media.py` извлекает Telegram media metadata, скачивает файл во временное хранилище и определяет формат для STT.
+`voicebot/media.py` извлекает метаданные только сообщений Telegram типа `voice`, скачивает файл во временное хранилище и определяет формат для STT. Сообщения `audio` и аудиофайлы типа `document` не попадают в этот путь.
 
 ### STT
 
@@ -89,7 +89,7 @@ SQLite хранится вне Git.
 ### Ручной /tr
 
 ```text
-/tr reply -> access check -> extract media -> limits -> cache lookup
+/tr reply -> voice check -> access check -> extract media -> limits -> cache lookup
           -> download -> RouterAI -> store -> reply
 ```
 

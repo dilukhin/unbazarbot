@@ -36,14 +36,13 @@ MVP работоспособен по подтверждённому польз�
 
 1. [#3 — отделить runtime config от публичного Git-конфига](https://github.com/dilukhin/unbazarbot/issues/3)
 2. [#4 — автоматические тесты и базовый CI](https://github.com/dilukhin/unbazarbot/issues/4)
-3. [#2 — конфигурируемый запрет MP3 и media format policy](https://github.com/dilukhin/unbazarbot/issues/2)
-4. [#1 — постобработка STT: пунктуация, предложения и абзацы](https://github.com/dilukhin/unbazarbot/issues/1)
-5. [#5 — production runtime: systemd, health, логи, SQLite backup и зависимости](https://github.com/dilukhin/unbazarbot/issues/5)
-6. [#6 — контроль расхода RouterAI и защита от повторной/параллельной оплаты](https://github.com/dilukhin/unbazarbot/issues/6)
+3. [#1 — постобработка STT: пунктуация, предложения и абзацы](https://github.com/dilukhin/unbazarbot/issues/1)
+4. [#5 — production runtime: systemd, health, логи, SQLite backup и зависимости](https://github.com/dilukhin/unbazarbot/issues/5)
+5. [#6 — контроль расхода RouterAI и защита от повторной/параллельной оплаты](https://github.com/dilukhin/unbazarbot/issues/6)
 
 ## Ближайший приоритет
 
-Сначала #3, затем расширить проверки #4 для остальных сценариев и выполнить #2 и #1. После этих изменений завершить #4 и перейти к #5 и #6.
+Сначала #3, затем расширить проверки #4 для остальных сценариев и выполнить #1. После этих изменений завершить #4 и перейти к #5 и #6.
 
 ## Документационный контур
 
@@ -64,3 +63,7 @@ ChatGPT Project настроен по GitHub-first схеме:
 При ревью исправлены прерывание миграции базы и уведомления при ошибке редактирования
 старого сообщения. Обновление рабочего VPS ещё не выполнялось.
 [Инструкция](docs/access_management_ru.md).
+
+## Голосовые сообщения
+
+Код принимает для распознавания только Telegram `voice` в личке, в групповой автоматической обработке и по `/tr` в ответ. Обычные `audio` и аудиофайлы как `document` не создают задания и не вызывают RouterAI. Обновление рабочего бота ещё не выполнено.

@@ -52,7 +52,6 @@ Mutable документация остаётся в GitHub и не дублир
 ## Известные ограничения / открытые issues
 
 - [#1](https://github.com/dilukhin/unbazarbot/issues/1) — нет отдельного LLM post-processing для пунктуации и абзацев.
-- [#2](https://github.com/dilukhin/unbazarbot/issues/2) — нет конфигурируемого запрета MP3/media format policy.
 - [#3](https://github.com/dilukhin/unbazarbot/issues/3) — публичный tracked `config.yaml` содержит runtime/персональную admin-привязку; требуется example/local split.
 - [#4](https://github.com/dilukhin/unbazarbot/issues/4) — добавлены автоматические проверки доступа и GitHub Actions; остаётся покрыть прочие сценарии, ограничения форматов и форматирование.
 - [#5](https://github.com/dilukhin/unbazarbot/issues/5) — production systemd/health/log/backup/dependency lifecycle не верифицирован как устойчивый.
@@ -85,3 +84,7 @@ Mutable документация остаётся в GitHub и не дублир
 Обновление рабочего VPS ещё не выполнялось. Подробности:
 [управление доступом](access_management_ru.md).
 Работа Max в отдельном запросе на слияние #9 и перенос конфигурации в #7 не изменены.
+
+## Голосовые сообщения (2026-10-06)
+
+Распознавание в коде ограничено типом Telegram `voice`: `/tr` отвечает отказом на обычное аудио и документ, а автоматическая обработка и личка тихо пропускают их. Это правило основано на типе сообщения, а не на расширении файла. Рабочее развёртывание на vserv ещё предстоит.

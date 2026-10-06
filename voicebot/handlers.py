@@ -160,7 +160,7 @@ async def transcribe_message_media(
 ) -> None:
     media = extract_media(target_message)
     if not media:
-        await message.answer("В сообщении не найдено voice/audio. Используйте /tr как reply на голосовое или аудио.")
+        await message.answer("В сообщении нет голосового сообщения Telegram. Используйте /tr в ответ на голосовое.")
         return
 
     validation_error = validate_media(media, ctx)
@@ -262,7 +262,7 @@ async def cmd_start(message: Message, ctx: AppContext, state: FSMContext) -> Non
 async def cmd_help(message: Message, ctx: AppContext) -> None:
     await message.answer(
         "Команды:\n"
-        "/tr [model] — распознать voice/audio из reply\n"
+        "/tr [model] — распознать голосовое сообщение из ответа\n"
         "/model — список моделей\n"
         "/model set <alias> — выбрать модель для текущего чата\n"
         "/status — статус текущего чата\n"
@@ -386,20 +386,19 @@ async def cmd_auto_off(message: Message, ctx: AppContext, bot: Bot) -> None:
 
 @router.message(Command("tr"))
 async def cmd_transcribe(message: Message, command: CommandObject, ctx: AppContext, bot: Bot) -> None:
-    if not await check_access_for_transcription(message, ctx, bot):
-        return
     target = message.reply_to_message
-    if not target:
-        await message.answer("Используйте /tr как reply на voice/audio сообщение.")
+    if not target or not target.voice:
+        await message.answer("Используйте /tr в ответ на голосовое сообщение Telegram. Музыка и аудиофайлы не распознаются.")
+        return
+    if not await check_access_for_transcription(message, ctx, bot):
         return
     model_alias = await resolve_model_alias(message, command, ctx)
     await transcribe_message_media(message, target, ctx, bot, model_alias)
 
 
-@router.message(F.voice | F.audio | F.document)
+@router.message(F.voice)
 async def media_auto_or_private(message: Message, ctx: AppContext, bot: Bot) -> None:
-    media = extract_media(message)
-    if not media:
+    if not message.voice:
         return
     if is_private_chat(message):
         if not await check_access_for_transcription(message, ctx, bot):

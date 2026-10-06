@@ -34,3 +34,4 @@ stt:
     qwen_flash:
       provider_model: qwen/qwen3-asr-flash-2026-02-10
       description: кандидат для русского и шумного аудио
+

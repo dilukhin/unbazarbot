@@ -50,17 +50,25 @@ Telegram reply
 - auto/private media handler;
 - событием добавления бота в группу.
 
+`voicebot/access_ui.py` содержит меню `/access`, списки, карточки, поиск и ввод
+пояснения к личной заявке. Этот обработчик подключается перед общими обработчиками.
+`voicebot/access_store.py` расширяет хранилище отдельными разрешениями пользователей,
+миграцией схемы и транзакциями решений. Состояние ввода хранится в памяти aiogram,
+а заявки и разрешения — в SQLite.
+
 ### Config
 
 `voicebot/config.py` преобразует YAML в typed application config. Модели задаются alias -> provider_model. Новая STT-модель не должна требовать изменения Telegram handlers, если её protocol совместим с текущим transcriber.
 
-Публичный шаблон — `config.example.yaml`; рабочая конфигурация — локальный `config.yaml` либо путь из `CONFIG_PATH`. Шаблон не загружается автоматически. Credentials читаются из окружения/`.env` отдельно от YAML.
+Публичный шаблон — `config.example.yaml`; рабочий YAML исключён из Git.
+`CONFIG_PATH` может указывать на внешний файл. Шаблон не загружается автоматически.
 
 ### Persistence
 
 `voicebot/db.py` содержит runtime schema и операции над:
 - admins;
 - groups;
+- private_users;
 - access requests;
 - transcription jobs;
 - cache/audit data.
@@ -69,7 +77,7 @@ SQLite хранится вне Git.
 
 ### Media
 
-`voicebot/media.py` извлекает Telegram media metadata, скачивает файл во временное хранилище и определяет формат для STT.
+`voicebot/media.py` извлекает метаданные только сообщений Telegram типа `voice`, скачивает файл во временное хранилище и определяет формат для STT. Сообщения `audio` и аудиофайлы типа `document` не попадают в этот путь.
 
 ### STT
 
@@ -84,7 +92,7 @@ SQLite хранится вне Git.
 ### Ручной /tr
 
 ```text
-/tr reply -> access check -> extract media -> limits -> cache lookup
+/tr reply -> voice check -> access check -> extract media -> limits -> cache lookup
           -> download -> RouterAI -> store -> reply
 ```
 
@@ -118,3 +126,5 @@ new media in group
 - rate/cost policy — отдельный policy слой перед provider call.
 
 Такие расширения не должны смешивать access decision, Telegram transport и внешнее распознавание в одну функцию.
+
+

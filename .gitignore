@@ -21,5 +21,6 @@ __pycache__/
 
 .DS_Store
 
-# Local deployment configuration
+# Рабочая конфигурация
 /config.yaml
+

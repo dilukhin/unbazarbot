@@ -9,6 +9,8 @@ import uuid
 
 import aiosqlite
 
+from .access_store import AccessStore
+
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -36,9 +38,11 @@ class AccessRequest:
     status: str
     created_at: str
     updated_at: str
+    subject_type: str = "group"
+    is_new: bool = False
 
 
-class Database:
+class Database(AccessStore):
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -142,6 +146,7 @@ class Database:
             """
         )
         await self.db.commit()
+        await self.init_access_schema()
 
     async def upsert_config_admins(self, admin_user_ids: set[int]) -> None:
         now = utcnow()
@@ -254,210 +259,61 @@ class Database:
         )
         await self.db.commit()
 
-    async def set_group_auto(self, chat_id: int, enabled: bool) -> None:
-        await self.db.execute(
-            "UPDATE groups SET auto_enabled=?, updated_at=? WHERE chat_id=?",
-            (1 if enabled else 0, utcnow(), chat_id),
-        )
-        await self.db.commit()
+    async def set_group_auto(self, chat_id: int, enabled: bool) -> bool:
+        async with self.access_transaction() as conn:
+            cursor = await conn.execute(
+                "UPDATE groups SET auto_enabled=?, updated_at=? WHERE chat_id=?" +
+                (" AND status='approved'" if enabled else ""),
+                (1 if enabled else 0, utcnow(), chat_id),
+            )
+            return bool(cursor.rowcount)
 
     async def consume_one_time_job_if_needed(self, chat_id: int) -> bool:
-        group = await self.get_group(chat_id)
-        if not group:
-            return False
-        if group.status == "approved":
-            return True
-        if group.status == "approved_once" and group.remaining_jobs > 0:
-            remaining = group.remaining_jobs - 1
-            new_status = "revoked" if remaining <= 0 else "approved_once"
-            await self.db.execute(
-                "UPDATE groups SET remaining_jobs=?, status=?, updated_at=? WHERE chat_id=?",
-                (remaining, new_status, utcnow(), chat_id),
+        async with self.access_transaction() as conn:
+            row = await (await conn.execute("SELECT status,remaining_jobs FROM groups WHERE chat_id=?", (chat_id,))).fetchone()
+            if not row:
+                return False
+            if row["status"] == "approved":
+                return True
+            if row["status"] != "approved_once" or row["remaining_jobs"] <= 0:
+                return False
+            remaining = row["remaining_jobs"] - 1
+            await conn.execute(
+                "UPDATE groups SET remaining_jobs=?,status=?,revision=revision+1,updated_at=? WHERE chat_id=?",
+                (remaining, "revoked" if remaining == 0 else "approved_once", utcnow(), chat_id),
             )
-            await self.db.commit()
             return True
-        return False
 
-    async def create_or_get_pending_request(
-        self,
-        chat_id: int,
-        chat_title: str | None,
-        requester_user_id: int | None,
-        requester_username: str | None,
-        reason: str,
-    ) -> AccessRequest:
-        row = await (await self.db.execute(
-            """
-            SELECT * FROM access_requests
-            WHERE chat_id=? AND status='pending'
-            ORDER BY created_at DESC LIMIT 1
-            """,
-            (chat_id,),
-        )).fetchone()
-        now = utcnow()
-        if row:
-            await self.db.execute(
-                """
-                UPDATE access_requests SET
-                  chat_title=COALESCE(?, chat_title),
-                  requester_user_id=COALESCE(?, requester_user_id),
-                  requester_username=COALESCE(?, requester_username),
-                  reason=?,
-                  updated_at=?
-                WHERE id=?
-                """,
-                (chat_title, requester_user_id, requester_username, reason, now, row["id"]),
-            )
-            await self.db.commit()
-            return await self.get_request(row["id"])  # type: ignore[return-value]
-
-        request_id = uuid.uuid4().hex[:12]
-        await self.db.execute(
-            """
-            INSERT INTO access_requests(
-              id, chat_id, chat_title, requester_user_id, requester_username,
-              reason, status, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-            """,
-            (request_id, chat_id, chat_title, requester_user_id, requester_username, reason, now, now),
-        )
-        await self.db.commit()
-        return await self.get_request(request_id)  # type: ignore[return-value]
-
-    async def get_request(self, request_id: str) -> AccessRequest | None:
-        row = await (await self.db.execute(
-            "SELECT * FROM access_requests WHERE id=?", (request_id,)
-        )).fetchone()
-        if not row:
-            return None
+    @staticmethod
+    def _request_from_row(row, is_new=False) -> AccessRequest:
         return AccessRequest(
-            id=row["id"],
-            chat_id=int(row["chat_id"]),
-            chat_title=row["chat_title"],
-            requester_user_id=(int(row["requester_user_id"]) if row["requester_user_id"] else None),
-            requester_username=row["requester_username"],
-            reason=row["reason"],
-            status=row["status"],
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
+            id=row["id"], chat_id=int(row["chat_id"]), chat_title=row["chat_title"],
+            requester_user_id=row["requester_user_id"], requester_username=row["requester_username"],
+            reason=row["reason"], status=row["status"], created_at=row["created_at"],
+            updated_at=row["updated_at"], subject_type=row["subject_type"], is_new=is_new,
         )
 
-    async def list_pending_requests(self) -> list[AccessRequest]:
-        rows = await (await self.db.execute(
-            "SELECT * FROM access_requests WHERE status='pending' ORDER BY updated_at DESC LIMIT 50"
-        )).fetchall()
-        return [
-            AccessRequest(
-                id=row["id"],
-                chat_id=int(row["chat_id"]),
-                chat_title=row["chat_title"],
-                requester_user_id=(int(row["requester_user_id"]) if row["requester_user_id"] else None),
-                requester_username=row["requester_username"],
-                reason=row["reason"],
-                status=row["status"],
-                created_at=row["created_at"],
-                updated_at=row["updated_at"],
-            )
-            for row in rows
-        ]
+    async def create_or_get_pending_request(self, chat_id, chat_title, requester_user_id,
+                                            requester_username, reason, cooldown=300):
+        return await self.create_access_request("group", chat_id, chat_title, requester_user_id,
+                                                requester_username, reason, cooldown)
 
-    async def decide_request(
-        self, request_id: str, decision: str, admin_user_id: int, one_time_jobs: int
-    ) -> AccessRequest | None:
-        req = await self.get_request(request_id)
-        if not req or req.status != "pending":
-            return req
-        now = utcnow()
-        if decision == "approve_once":
-            await self.db.execute(
-                """
-                INSERT INTO groups(chat_id, title, status, approval_type, approved_by_user_id,
-                                   approved_at, auto_enabled, remaining_jobs, created_at, updated_at)
-                VALUES(?, ?, 'approved_once', 'once', ?, ?, 0, ?, ?, ?)
-                ON CONFLICT(chat_id) DO UPDATE SET
-                  title=COALESCE(excluded.title, groups.title),
-                  status='approved_once',
-                  approval_type='once',
-                  approved_by_user_id=excluded.approved_by_user_id,
-                  approved_at=excluded.approved_at,
-                  revoked_by_user_id=NULL,
-                  revoked_at=NULL,
-                  auto_enabled=0,
-                  remaining_jobs=excluded.remaining_jobs,
-                  updated_at=excluded.updated_at
-                """,
-                (req.chat_id, req.chat_title, admin_user_id, now, one_time_jobs, now, now),
-            )
-            new_status = "approved_once"
-        elif decision == "approve_forever":
-            await self.db.execute(
-                """
-                INSERT INTO groups(chat_id, title, status, approval_type, approved_by_user_id,
-                                   approved_at, auto_enabled, remaining_jobs, created_at, updated_at)
-                VALUES(?, ?, 'approved', 'forever', ?, ?, 0, 0, ?, ?)
-                ON CONFLICT(chat_id) DO UPDATE SET
-                  title=COALESCE(excluded.title, groups.title),
-                  status='approved',
-                  approval_type='forever',
-                  approved_by_user_id=excluded.approved_by_user_id,
-                  approved_at=excluded.approved_at,
-                  revoked_by_user_id=NULL,
-                  revoked_at=NULL,
-                  remaining_jobs=0,
-                  updated_at=excluded.updated_at
-                """,
-                (req.chat_id, req.chat_title, admin_user_id, now, now, now),
-            )
-            new_status = "approved_forever"
-        elif decision == "reject":
-            await self.db.execute(
-                """
-                INSERT INTO groups(chat_id, title, status, created_at, updated_at)
-                VALUES(?, ?, 'rejected', ?, ?)
-                ON CONFLICT(chat_id) DO UPDATE SET
-                  title=COALESCE(excluded.title, groups.title),
-                  status='rejected',
-                  updated_at=excluded.updated_at
-                """,
-                (req.chat_id, req.chat_title, now, now),
-            )
-            new_status = "rejected"
-        else:
-            raise ValueError(f"Unknown decision: {decision}")
+    async def get_request(self, request_id):
+        row = await (await self.db.execute("SELECT * FROM access_requests WHERE id=?", (request_id,))).fetchone()
+        return self._request_from_row(row) if row else None
 
-        await self.db.execute(
-            """
-            UPDATE access_requests
-            SET status=?, decided_by_user_id=?, decided_at=?, updated_at=?
-            WHERE id=?
-            """,
-            (new_status, admin_user_id, now, now, request_id),
-        )
-        await self.audit(admin_user_id, decision, req.chat_id, request_id, {})
-        await self.db.commit()
-        return await self.get_request(request_id)
+    async def list_pending_requests(self):
+        rows, _, _ = await self.access_page("requests", size=50)
+        return [self._request_from_row(row) for row in rows]
 
-    async def revoke_group(self, chat_id: int, admin_user_id: int) -> bool:
-        group = await self.get_group(chat_id)
-        if not group:
-            return False
-        await self.db.execute(
-            """
-            UPDATE groups SET
-              status='revoked',
-              approval_type=NULL,
-              revoked_by_user_id=?,
-              revoked_at=?,
-              auto_enabled=0,
-              remaining_jobs=0,
-              updated_at=?
-            WHERE chat_id=?
-            """,
-            (admin_user_id, utcnow(), utcnow(), chat_id),
-        )
-        await self.audit(admin_user_id, "revoke", chat_id, str(chat_id), {})
-        await self.db.commit()
-        return True
+    async def decide_request(self, request_id, decision, admin_user_id, one_time_jobs):
+        # Старые уведомления могут управлять только группами.
+        return await self.decide_access_request(request_id, decision, admin_user_id, one_time_jobs,
+                                                expected_kind="group")
+
+    async def revoke_group(self, chat_id, admin_user_id):
+        row = await self.access_subject("group", chat_id)
+        return bool(row and await self.change_access("group", chat_id, "revoke", admin_user_id, row["revision"]))
 
     async def cached_transcript(self, file_unique_id: str, model_alias: str) -> dict[str, Any] | None:
         row = await (await self.db.execute(
@@ -535,3 +391,4 @@ class Database:
             """,
             (actor_user_id, action, chat_id, target_id, json.dumps(details, ensure_ascii=False), utcnow()),
         )
+

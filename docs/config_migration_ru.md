@@ -89,3 +89,4 @@ python -c "from voicebot.config import load_config; load_config('config.yaml'); 
 
 Удалённый из текущего дерева ID остаётся в старых коммитах. Переписывание
 истории не входит в эту миграцию.
+

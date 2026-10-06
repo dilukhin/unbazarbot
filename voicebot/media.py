@@ -68,5 +68,10 @@ async def download_media_to_temp(bot: Bot, media: MediaRef, suffix: str | None =
     tmp = tempfile.NamedTemporaryFile(prefix="unbazarbot_", suffix=final_suffix, delete=False)
     tmp_path = Path(tmp.name)
     tmp.close()
-    await bot.download_file(file_path, destination=tmp_path)
+    try:
+        await bot.download_file(file_path, destination=tmp_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
     return tmp_path, file_path
+

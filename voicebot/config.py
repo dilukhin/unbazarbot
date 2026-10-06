@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from .paid_store import BudgetLimits
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,7 @@ class AppConfig:
     temperature: float | None
     routerai_base_url: str
     models: dict[str, ModelConfig]
+    budget: BudgetLimits = field(default_factory=BudgetLimits)
 
     def model(self, alias: str | None = None) -> ModelConfig:
         selected = alias or self.default_model
@@ -107,6 +110,12 @@ def load_config(path: str | Path) -> AppConfig:
     for user_id in telegram.get("admin_user_ids") or []:
         admin_ids.add(int(user_id))
 
+    budget_raw = raw.get('budget') or {}
+    budget = BudgetLimits(**{name: int(budget_raw.get(name, field.default))
+                            for name, field in BudgetLimits.__dataclass_fields__.items()})
+    if any(value < 1 for value in budget.__dict__.values()):
+        raise ValueError('Все лимиты budget должны быть положительными')
+
     return AppConfig(
         bot_username=str(telegram.get("bot_username") or ""),
         admin_user_ids=admin_ids,
@@ -126,5 +135,6 @@ def load_config(path: str | Path) -> AppConfig:
         temperature=(float(stt["temperature"]) if "temperature" in stt and stt["temperature"] is not None else None),
         routerai_base_url=str(stt.get("routerai_base_url") or "https://routerai.ru/api/v1"),
         models=models,
+        budget=budget,
     )
 

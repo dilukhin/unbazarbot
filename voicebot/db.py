@@ -10,6 +10,7 @@ import uuid
 import aiosqlite
 
 from .access_store import AccessStore
+from .paid_store import PaidStore
 
 
 def utcnow() -> str:
@@ -42,7 +43,7 @@ class AccessRequest:
     is_new: bool = False
 
 
-class Database(AccessStore):
+class Database(AccessStore, PaidStore):
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -147,6 +148,7 @@ class Database(AccessStore):
         )
         await self.db.commit()
         await self.init_access_schema()
+        await self.init_paid_schema()
 
     async def upsert_config_admins(self, admin_user_ids: set[int]) -> None:
         now = utcnow()
@@ -391,4 +393,5 @@ class Database(AccessStore):
             """,
             (actor_user_id, action, chat_id, target_id, json.dumps(details, ensure_ascii=False), utcnow()),
         )
+
 

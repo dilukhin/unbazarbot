@@ -355,3 +355,19 @@ python -m pip install --upgrade -r requirements.txt
 Проект распространяется под лицензией MIT. См. файл `LICENSE`.
 
 
+
+## Проверки и расходы
+
+Проверки не вызывают реальные Telegram и RouterAI:
+
+```bash
+python -m pip install -r requirements.txt pytest
+python -m compileall -q bot.py voicebot tests
+python -m pytest -q
+```
+
+Новые платные вызовы ограничены разделом `budget`; без него применяются
+безопасные значения шаблона. `/stats` показывает администратору минуты,
+попытки и известную стоимость. Одноразовое разрешение резервируется до
+RouterAI. Неизвестный исход оплаты не повторяется автоматически.
+[Полное описание](docs/budget_ru.md).

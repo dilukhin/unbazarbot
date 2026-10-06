@@ -75,6 +75,16 @@ class BudgetTests(DatabaseCase):
             file_unique_id='f',model_alias='m',seconds=1,limits=self.limits,allow_private_admins=False)
         self.assertIsNotNone(reason)
 
+    async def test_removed_config_administrator_cannot_manage_or_pay(self):
+        await self.db.register_admin_private_chat(1,1,'test','Тест')
+        await self.db.upsert_config_admins(set())
+        self.assertFalse(await self.db.is_admin(1))
+        self.assertIsNotNone((await self.reserve())[1])
+        await self.db.upsert_config_admins({1})
+        self.assertTrue(await self.db.is_admin(1))
+        row=await (await self.db.db.execute('SELECT private_chat_id FROM admins WHERE user_id=1')).fetchone()
+        self.assertEqual(row[0],1)
+
     async def test_chat_rate_limit_and_minute_reset(self):
         limits=replace(self.limits,requests_per_minute_chat=1)
         self.assertIsNone((await self.reserve('a',limits=limits))[1])

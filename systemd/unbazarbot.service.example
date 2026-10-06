@@ -1,15 +1,21 @@
 [Unit]
-Description=Unbazar Telegram transcription bot
+Description=Unbazarbot Telegram voice transcription
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/dilukhin/unbazarbot
-EnvironmentFile=/home/dilukhin/unbazarbot/.env
-ExecStart=/home/dilukhin/unbazarbot/.venv/bin/python /home/dilukhin/unbazarbot/bot.py
-Restart=always
+User=unbazarbot
+WorkingDirectory=/opt/unbazarbot/current
+EnvironmentFile=/etc/unbazarbot/bot.env
+ExecStart=/opt/unbazarbot/current/.venv/bin/python /opt/unbazarbot/current/bot.py
+Restart=on-failure
 RestartSec=5
+KillMode=control-group
+TimeoutStopSec=180
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

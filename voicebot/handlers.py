@@ -26,6 +26,8 @@ from .config import AppConfig
 from .db import Database, AccessRequest
 from .media import MediaRef, download_media_to_temp, extract_media, guess_audio_format
 from .stt_routerai import RouterAITranscriber
+from .formatter import RouterAIFormatter, FormatResult
+from .diagnostics import about_text, system_text
 from .textfmt import chunks, user_label
 
 
@@ -34,6 +36,7 @@ class AppContext:
     config: AppConfig
     db: Database
     transcriber: RouterAITranscriber
+    formatter: RouterAIFormatter | None = None
 
 
 router = Router()
@@ -160,6 +163,7 @@ async def transcribe_message_media(
     bot: Bot,
     model_alias: str,
     require_auto: bool = False,
+    raw: bool = False,
 ) -> None:
     media = extract_media(target_message)
     if not media:
@@ -175,6 +179,8 @@ async def transcribe_message_media(
     cached = await ctx.db.cached_transcript(media.file_unique_id, model_alias)
     if cached:
         text = str(cached["transcript"])
+        if not raw and ctx.config.formatter.enabled and cached.get('formatter_signature') == ctx.config.formatter.signature:
+            text = cached.get('formatted_transcript') or text
         prefix = f"Расшифровка из кеша · модель: {model_alias}\n\n"
         first = True
         for part in chunks(text):
@@ -223,30 +229,48 @@ async def transcribe_message_media(
             language=ctx.config.language,
             temperature=ctx.config.temperature,
         )
-        await ctx.db.complete_paid_job(job_id, result.text, result.cost, result.duration_seconds)
-        completed = True
+        output_text = result.text
+        format_result = None
+        if not raw and ctx.config.formatter.enabled and ctx.formatter:
+            await ctx.db.save_raw_for_formatting(job_id,result.text,result.cost,result.duration_seconds,ctx.config.formatter.signature)
+            completed = True  # Исходный результат уже устойчиво сохранён.
+            try:
+                if await ctx.db.formatting_access_allowed(job_id,ctx.config.allow_private_transcription_for_admins):
+                    format_result = await ctx.formatter.format(result.text)
+                else:
+                    format_result = FormatResult(result.text,error='AccessChanged')
+            except Exception as exc:
+                format_result = FormatResult(result.text,attempted=True,error=type(exc).__name__)
+            await ctx.db.finish_formatting(job_id,format_result)
+            output_text = format_result.text
+        else:
+            await ctx.db.complete_paid_job(job_id, result.text, result.cost, result.duration_seconds)
+            completed = True
 
         meta = f"Расшифровка · модель: {model_alias}"
         if result.duration_seconds is not None:
             meta += f" · {result.duration_seconds:.1f} сек"
         if result.cost is not None:
-            meta += f" · cost: {result.cost:g}"
+            meta += f" · стоимость распознавания: {result.cost:g}"
+        if format_result and format_result.cost is not None:
+            meta += f" · стоимость оформления: {format_result.cost:g}"
         meta += "\n\n"
 
         first = True
-        for part in chunks(result.text):
+        for part in chunks(output_text):
             await message.answer((meta if first else "") + part, reply_to_message_id=target_message.message_id)
             first = False
     except asyncio.CancelledError:
-        if paid_started and not completed:
+        if paid_started:
             await asyncio.shield(ctx.db.finish_paid_call(job_id, 'interrupted'))
+        if paid_started and not completed:
             await asyncio.shield(ctx.db.fail_job(job_id, 'Процесс прерван; исход оплаты неизвестен'))
         raise
     except Exception as exc:
         if not completed:
             await ctx.db.fail_job(job_id, type(exc).__name__)
-            if paid_started:
-                await ctx.db.finish_paid_call(job_id, 'error')
+        if paid_started:
+            await ctx.db.finish_paid_call(job_id, 'error')
         logging.error('Ошибка задания распознавания: %s', type(exc).__name__)
         await message.answer('Не удалось завершить распознавание. Администратор может проверить состояние задания; платный вызов автоматически не повторяется.')
     finally:
@@ -280,17 +304,32 @@ async def cmd_help(message: Message, ctx: AppContext) -> None:
     await message.answer(
         "Команды:\n"
         "/tr [model] — распознать голосовое сообщение из ответа\n"
+        "/tr_raw [model] — получить исходную расшифровку без оформления\n"
         "/model — список моделей\n"
         "/model set <alias> — выбрать модель для текущего чата\n"
         "/status — статус текущего чата\n"
+        "/about — назначение и версия бота\n"
         "/auto_on, /auto_off — авто-распознавание новых voice в группе\n\n"
         "Админские в личке:\n"
         "/access — управление доступом людей и групп\n"
         "/stats — расход и лимиты за сутки UTC\n"
+        "/system — сервер и среда запуска\n"
         "/requests — заявки людей и групп\n"
         "/groups — список групп\n"
         "/revoke <chat_id> — отозвать доступ"
     )
+
+
+@router.message(Command('about'))
+async def cmd_about(message: Message) -> None:
+    await message.answer(about_text())
+
+
+@router.message(Command('system'))
+async def cmd_system(message: Message, ctx: AppContext) -> None:
+    if await require_admin(message,ctx):
+        for part in chunks(system_text(ctx)):
+            await message.answer(part)
 
 
 @router.message(Command("stats"))
@@ -422,7 +461,7 @@ async def cmd_auto_off(message: Message, ctx: AppContext, bot: Bot) -> None:
     await message.answer("Авто-распознавание выключено.")
 
 
-@router.message(Command("tr"))
+@router.message(Command("tr", "tr_raw"))
 async def cmd_transcribe(message: Message, command: CommandObject, ctx: AppContext, bot: Bot) -> None:
     target = message.reply_to_message
     if not target or not target.voice:
@@ -431,7 +470,10 @@ async def cmd_transcribe(message: Message, command: CommandObject, ctx: AppConte
     if not await check_access_for_transcription(message, ctx, bot):
         return
     model_alias = await resolve_model_alias(message, command, ctx)
-    await transcribe_message_media(message, target, ctx, bot, model_alias)
+    if command and command.command == 'tr_raw':
+        await transcribe_message_media(message, target, ctx, bot, model_alias, raw=True)
+    else:
+        await transcribe_message_media(message, target, ctx, bot, model_alias)
 
 
 @router.message(F.voice)

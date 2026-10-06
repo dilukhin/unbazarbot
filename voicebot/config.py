@@ -7,6 +7,7 @@ from typing import Any
 import yaml
 
 from .paid_store import BudgetLimits
+from .formatter import FormatterConfig
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,7 @@ class AppConfig:
     routerai_base_url: str
     models: dict[str, ModelConfig]
     budget: BudgetLimits = field(default_factory=BudgetLimits)
+    formatter: FormatterConfig = field(default_factory=FormatterConfig)
 
     def model(self, alias: str | None = None) -> ModelConfig:
         selected = alias or self.default_model
@@ -115,6 +117,21 @@ def load_config(path: str | Path) -> AppConfig:
                             for name, field in BudgetLimits.__dataclass_fields__.items()})
     if any(value < 1 for value in budget.__dict__.values()):
         raise ValueError('Все лимиты budget должны быть положительными')
+    formatter_raw = raw.get('formatter') or {}
+    formatter_models = {str(alias): str(spec['provider_model'])
+                        for alias, spec in (formatter_raw.get('models') or {}).items()}
+    formatter = FormatterConfig(
+        enabled=bool(formatter_raw.get('enabled',False)),
+        default_model=str(formatter_raw.get('default_model') or ''),
+        models=formatter_models,
+        max_input_chars=int(formatter_raw.get('max_input_chars',12000)),
+        max_output_tokens=int(formatter_raw.get('max_output_tokens',4096)),
+        timeout_seconds=int(formatter_raw.get('timeout_seconds',30)),
+    )
+    if min(formatter.max_input_chars,formatter.max_output_tokens,formatter.timeout_seconds)<1:
+        raise ValueError('Лимиты formatter должны быть положительными')
+    if formatter.enabled and (formatter.default_model not in formatter.models or not formatter.models[formatter.default_model]):
+        raise ValueError('Для formatter выберите default_model и provider_model')
 
     return AppConfig(
         bot_username=str(telegram.get("bot_username") or ""),
@@ -136,5 +153,5 @@ def load_config(path: str | Path) -> AppConfig:
         routerai_base_url=str(stt.get("routerai_base_url") or "https://routerai.ru/api/v1"),
         models=models,
         budget=budget,
+        formatter=formatter,
     )
-

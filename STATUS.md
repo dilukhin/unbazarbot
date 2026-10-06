@@ -34,7 +34,7 @@ MVP работоспособен по подтверждённому польз�
 
 ## Открытые задачи
 
-1. [#3 — отделить runtime config от публичного Git-конфига](https://github.com/dilukhin/unbazarbot/issues/3)
+1. Отделение конфигурации подготовлено в PR #7; миграция сервера — #12.
 2. [#4 — автоматические тесты и базовый CI](https://github.com/dilukhin/unbazarbot/issues/4)
 3. [#1 — постобработка STT: пунктуация, предложения и абзацы](https://github.com/dilukhin/unbazarbot/issues/1)
 4. [#5 — production runtime: systemd, health, логи, SQLite backup и зависимости](https://github.com/dilukhin/unbazarbot/issues/5)
@@ -67,3 +67,4 @@ ChatGPT Project настроен по GitHub-first схеме:
 ## Голосовые сообщения
 
 Код принимает для распознавания только Telegram `voice` в личке, в групповой автоматической обработке и по `/tr` в ответ. Обычные `audio` и аудиофайлы как `document` не создают задания и не вызывают RouterAI. Обновление рабочего бота ещё не выполнено.
+

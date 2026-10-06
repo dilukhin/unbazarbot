@@ -60,6 +60,9 @@ Telegram reply
 
 `voicebot/config.py` преобразует YAML в typed application config. Модели задаются alias -> provider_model. Новая STT-модель не должна требовать изменения Telegram handlers, если её protocol совместим с текущим transcriber.
 
+Публичный шаблон — `config.example.yaml`; рабочий YAML исключён из Git.
+`CONFIG_PATH` может указывать на внешний файл. Шаблон не загружается автоматически.
+
 ### Persistence
 
 `voicebot/db.py` содержит runtime schema и операции над:
@@ -123,4 +126,5 @@ new media in group
 - rate/cost policy — отдельный policy слой перед provider call.
 
 Такие расширения не должны смешивать access decision, Telegram transport и внешнее распознавание в одну функцию.
+
 

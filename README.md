@@ -136,6 +136,17 @@ DB_PATH=data/bot.sqlite3
 
 ## Настройка `config.yaml`
 
+В Git хранится только безопасный `config.example.yaml`. Для новой установки
+скопируйте его в `config.yaml` (`cp config.example.yaml config.yaml` в Linux,
+`Copy-Item config.example.yaml config.yaml` в PowerShell), затем заполните
+`telegram.bot_username` и `telegram.admin_user_ids`.
+Токены остаются в `.env`. Альтернативный путь задаётся через `CONFIG_PATH`.
+Шаблон не подставляется автоматически. Перед обновлением существующего бота
+сохраните активную конфигурацию вне рабочей копии по
+[инструкции миграции](docs/config_migration_ru.md): Git удалит ранее отслеживаемый файл.
+Не заменяйте рабочие настройки шаблоном.
+
+
 Основные разделы:
 
 - `telegram.bot_username` - username бота без `@` или с ним, как принято в вашей конфигурации.
@@ -311,7 +322,7 @@ python -m pip install --upgrade -r requirements.txt
 
 ### `Config file not found: config.yaml`
 
-Проверьте `CONFIG_PATH` в `.env` и наличие `config.yaml`.
+Проверьте `CONFIG_PATH` в `.env` и наличие рабочего файла. Для новой установки скопируйте и заполните `config.example.yaml`; для существующей восстановите сохранённую конфигурацию по инструкции миграции.
 
 ### Группа не получает доступ
 
@@ -342,4 +353,5 @@ python -m pip install --upgrade -r requirements.txt
 ## Лицензия
 
 Проект распространяется под лицензией MIT. См. файл `LICENSE`.
+
 

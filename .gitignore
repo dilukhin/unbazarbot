@@ -20,3 +20,7 @@ __pycache__/
 .agent-safety/
 
 .DS_Store
+
+# Рабочая конфигурация
+/config.yaml
+

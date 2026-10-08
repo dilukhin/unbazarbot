@@ -1,6 +1,6 @@
 # Unbazarbot — архитектура
 
-Дата актуализации: 2026-09-18.
+Дата актуализации: 2026-10-08.
 
 ## Компоненты
 
@@ -40,12 +40,12 @@ Telegram reply
 - синхронизирует config-admins;
 - создаёт RouterAI transcriber;
 - запускает aiogram long polling;
-- перед стартом удаляет webhook с `drop_pending_updates=True`.
+- перед стартом удаляет webhook с `drop_pending_updates=False`, сохраняя накопленные обновления Telegram.
 
 ### Telegram layer
 
 `voicebot/handlers.py` владеет:
-- командами `/start`, `/help`, `/status`, `/model`, `/requests`, `/groups`, `/revoke`, `/auto_on`, `/auto_off`, `/tr`;
+- командами `/start`, `/help`, `/status`, `/model`, `/requests`, `/groups`, `/revoke`, `/auto_on`, `/auto_off`, `/tr`, `/tr_raw`, `/about`, `/system`, `/stats`;
 - group approval callbacks;
 - auto/private media handler;
 - событием добавления бота в группу.

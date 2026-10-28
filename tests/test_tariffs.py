@@ -19,6 +19,18 @@ from tests.tariff_fixtures import GOLDEN, NOW, catalog, document
 
 
 class ContractTests(unittest.TestCase):
+    def test_virtual_model_is_preserved_as_unpriced(self):
+        value = document()
+        model = copy.deepcopy(value['content']['models']['synthetic/asr'])
+        model.update(id='~synthetic/asr-latest', status='unpriced',
+                     reason='endpoints-not-checked', api=None, endpoints=[], price_ceilings={})
+        value['content']['models'][model['id']] = model
+        value['snapshot_id'] = content_hash(value['content'])
+        service = PriceCatalog('unused', clock=lambda: NOW)
+        service.snapshot = parse_document(json.dumps(value).encode(), now=NOW)
+        self.assertFalse(service.estimate_audio(model['id'], 60).available)
+        self.assertTrue(service.estimate_audio('synthetic/asr', 60).available)
+
     def test_shared_provider_golden_contract_and_exact_fraction(self):
         value = json.loads(GOLDEN.read_bytes())
         service = PriceCatalog('unused', clock=lambda: NOW)

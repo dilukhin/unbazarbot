@@ -164,6 +164,8 @@ class AccessStore:
                            max(1, jobs) if decision == "approve_once" else 0])
         params.append(target_id)
         await conn.execute(f"UPDATE {table} SET {assignments} WHERE {key}=?", params)
+        if kind=='user' and not grant:
+            await conn.execute('UPDATE private_users SET trf_allowed=0 WHERE user_id=?',(target_id,))
         if kind == 'group' and decision == 'approve_forever':
             await self._money_account(conn, kind, target_id, datetime.fromisoformat(stamp), 'persistent-approval')
             await self._money_roll(conn, kind, target_id, datetime.fromisoformat(stamp))

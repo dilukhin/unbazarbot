@@ -24,6 +24,10 @@ class FinancialStore:
             await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS financial_file_model ON financial_calls(file_unique_id,provider_model) WHERE state!='not-sent'")
             await conn.execute('CREATE INDEX IF NOT EXISTS financial_time ON financial_calls(created_at)')
             await conn.execute('CREATE TABLE IF NOT EXISTS frozen_models(provider_model TEXT PRIMARY KEY,reason TEXT NOT NULL,job_id TEXT NOT NULL,created_at TEXT NOT NULL)')
+            for name,definition in (('extended_required','INTEGER NOT NULL DEFAULT 0'),('extended_revision','INTEGER')):
+                columns=await (await conn.execute('PRAGMA table_info(financial_calls)')).fetchall()
+                if name not in {r['name'] for r in columns}:
+                    await conn.execute(f'ALTER TABLE financial_calls ADD COLUMN {name} {definition}')
             columns=await (await conn.execute('PRAGMA table_info(transcription_jobs)')).fetchall()
             if 'cost_rub' not in {r['name'] for r in columns}:
                 await conn.execute('ALTER TABLE transcription_jobs ADD COLUMN cost_rub TEXT')
@@ -33,7 +37,7 @@ class FinancialStore:
                     FROM paid_calls p LEFT JOIN transcription_jobs j ON j.id=p.job_id''')
                 await conn.execute("INSERT INTO money_meta VALUES('financial-legacy-v1')")
 
-    async def reserve_financial_call(self, *, quote, provider_model, **kwargs):
+    async def reserve_financial_call(self, *, quote, provider_model, require_extended=False, **kwargs):
         now=kwargs.get('at') or datetime.now(timezone.utc)
         if now.tzinfo is None:
             raise MoneyError('Timezone required')
@@ -44,6 +48,11 @@ class FinancialStore:
             async with self.access_transaction() as conn:
                 if kind=='user' and (type(user_id) is not int or user_id<=0):
                     raise MoneyError('Нельзя определить личный счёт отправителя.')
+                extended_revision=None
+                if require_extended:
+                    if kwargs.get('require_auto') or not await self.extended_audio_allowed(user_id,conn=conn):
+                        raise MoneyError('Отдельное разрешение /trf недоступно.')
+                    extended_revision=(await (await conn.execute('SELECT revision FROM private_users WHERE user_id=?',(user_id,))).fetchone())[0]
                 estimate=quote()
                 if not estimate.available or estimate.max_rub is None:
                     raise MoneyError('Проверенная оценка стоимости недоступна.')
@@ -73,6 +82,7 @@ class FinancialStore:
                     VALUES(?,?,?,?,?,?,?,?,?,'reserved',?,?)''',
                     (job_id,kwargs['file_unique_id'],provider_model,kind,subject,format(estimate.max_rub,'f'),bound,
                      estimate.snapshot_id,estimate.checked_at.isoformat() if estimate.checked_at else None,now.isoformat(),int(once)))
+                await conn.execute('UPDATE financial_calls SET extended_required=?,extended_revision=? WHERE job_id=?',(int(require_extended),extended_revision,job_id))
                 return None
         except MoneyError as exc:
             return 'Недостаточно базариков для предварительного резерва.' if str(exc)=='Insufficient balance' else str(exc)
@@ -96,7 +106,24 @@ class FinancialStore:
                 raise MoneyError('Model frozen')
             if not await self.formatting_access_allowed(job_id,allow_private_admins,conn=conn):
                 raise MoneyError('Access changed before send')
+            if row['extended_required']:
+                owner=await (await conn.execute('SELECT revision,trf_allowed FROM private_users WHERE user_id=?',(row['subject_id'],))).fetchone()
+                if not owner or not owner['trf_allowed'] or owner['revision']!=row['extended_revision']:
+                    raise MoneyError('Extended permission changed before send')
             await conn.execute("UPDATE financial_calls SET state='sending' WHERE job_id=?",(job_id,))
+
+    async def adjust_reserved_seconds(self, job_id, seconds, limits):
+        async with self.access_transaction() as conn:
+            row=await (await conn.execute('SELECT * FROM paid_calls WHERE job_id=?',(job_id,))).fetchone()
+            if not row or row['state']!='running' or type(seconds) is not int or seconds<1:
+                raise MoneyError('Audio reservation unavailable')
+            day=datetime.fromisoformat(row['started_at']).replace(hour=0,minute=0,second=0,microsecond=0).isoformat()
+            for condition,params,cap in (('chat_id=?',[row['chat_id']],limits.daily_minutes_chat),
+                    ('user_id=?',[row['user_id']],limits.daily_minutes_user),('1=1',[],limits.daily_minutes_total)):
+                if condition=='user_id=?' and row['user_id'] is None:continue
+                used=(await (await conn.execute(f'SELECT COALESCE(SUM(reserved_seconds),0) FROM paid_calls WHERE {condition} AND started_at>=? AND job_id!=?',params+[day,job_id])).fetchone())[0]
+                if used+seconds>cap*60:raise MoneyError('Фактическая длительность превышает доступный минутный бюджет.')
+            await conn.execute('UPDATE paid_calls SET reserved_seconds=? WHERE job_id=?',(seconds,job_id))
 
     async def release_financial_not_sent(self, job_id, *, proven_not_sent=False):
         async with self.access_transaction() as conn:

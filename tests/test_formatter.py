@@ -1,4 +1,4 @@
-from tests.tariff_fixtures import catalog as synthetic_catalog
+from tests.tariff_fixtures import catalog as synthetic_catalog, prepare_synthetic_audio
 import asyncio
 from dataclasses import replace
 from pathlib import Path
@@ -73,6 +73,7 @@ class FormatterPipelineTests(DatabaseCase):
         cfg=replace(load_config('config.example.yaml'),formatter=FormatterConfig(True,'p',{'p':'provider/model'}))
         self.db.money_settings=MoneySettings(global_daily_rub='100')
         self.ctx=AppContext(cfg,self.db,AsyncMock(),AsyncMock())
+        self.ctx.audio_preparer=prepare_synthetic_audio
         self.ctx.prices=synthetic_catalog(Path(self.tmp.name)/"prices.json", [m.provider_model for m in cfg.models.values()])
         self.ctx.transcriber.transcribe.return_value=SimpleNamespace(text='привет мир',cost=Decimal('0.1'),duration_seconds=3)
         self.ctx.formatter.format.return_value=FormatResult('Привет, мир!',0.2,True,True)
@@ -80,7 +81,7 @@ class FormatterPipelineTests(DatabaseCase):
             voice=SimpleNamespace(file_id='f',file_unique_id='f',duration=3,file_size=10,mime_type='audio/ogg'),
             answer=AsyncMock())
 
-    async def download(self,*args):
+    async def download(self,*args,**kwargs):
         path=Path(self.tmp.name)/'voice.ogg';path.write_bytes(b'test');return path,'voice.ogg'
 
     async def transcribe(self,raw=False):

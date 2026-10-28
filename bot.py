@@ -8,7 +8,7 @@ from pathlib import Path
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 
 from voicebot.access_ui import router as access_router
 from voicebot.config import load_config
@@ -20,10 +20,12 @@ from voicebot.tariffs import PriceCatalog
 from voicebot.formatter import RouterAIFormatter
 from voicebot.money_middleware import ExplicitMoneyInteraction
 from voicebot.money_ui import router as money_router
+from voicebot.runtime_paths import validate_tariff_path
 
 
 async def main() -> None:
-    load_dotenv()
+    env_file = find_dotenv()
+    load_dotenv(env_file)
 
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     routerai_key = os.getenv("ROUTERAI_API_KEY")
@@ -38,10 +40,12 @@ async def main() -> None:
         raise RuntimeError(f"Config file not found: {config_path}")
 
     config = load_config(config_path)
-    tariff_path = Path(os.getenv("TARIFF_CACHE_PATH", str(Path(db_path).resolve().parent / "routerai-prices.json"))).resolve()
-    if tariff_path.is_relative_to(Path(__file__).resolve().parent):
-        raise RuntimeError("TARIFF_CACHE_PATH must be outside application code/releases; use an external runtime directory")
-    with InstanceLock(os.getenv('LOCK_PATH', db_path + '.lock')):
+    lock_path = os.getenv('LOCK_PATH', db_path + '.lock')
+    tariff_path = validate_tariff_path(
+        os.getenv('TARIFF_CACHE_PATH', str(Path(db_path).resolve().parent / 'routerai-prices.json')),
+        database=db_path, config=config_path, lock=lock_path, env_file=env_file,
+        application_roots=(Path(__file__).resolve().parent,))
+    with InstanceLock(lock_path):
         db = Database(db_path, config.money)
         await db.open()
         await db.recover_paid_calls()

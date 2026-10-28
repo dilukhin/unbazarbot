@@ -16,6 +16,7 @@ from .money import MoneySettings
 from .financial_store import FinancialStore
 from .extended_store import ExtendedStore
 from .money_ui_store import MoneyUIStore
+from .release_contract import ensure_supported_database
 
 
 def utcnow() -> str:
@@ -56,6 +57,8 @@ class Database(AccessStore, PaidStore, LedgerStore, FinancialStore, ExtendedStor
         self.conn: aiosqlite.Connection | None = None
 
     async def open(self) -> None:
+        # Inspect before WAL, connection setup or a migration can write anything.
+        ensure_supported_database(self.path)
         self.conn = await aiosqlite.connect(self.path)
         self.conn.row_factory = aiosqlite.Row
         await self.conn.execute("PRAGMA journal_mode=WAL")

@@ -18,7 +18,7 @@ class DiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ,{'TELEGRAM_BOT_TOKEN':'SECRET','ROUTERAI_API_KEY':'OTHER_SECRET'}),patch('voicebot.diagnostics.revision',return_value='abc1234'):
             await cmd_about(message)
         text=message.answer.call_args.args[0]
-        self.assertIn('0.2.0',text)
+        self.assertIn('0.3.0',text)
         self.assertIn('abc1234',text)
         self.assertNotIn('SECRET',text)
         self.assertNotIn('Каталог',text)

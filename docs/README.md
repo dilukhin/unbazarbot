@@ -27,4 +27,16 @@ GitHub — основной изменяемый источник истины �
 - [budget_ru.md](budget_ru.md) — ограничения платных запросов и учёт расходов.
 - [formatter_ru.md](formatter_ru.md) — необязательное оформление текста.
 - [update_procedure_ru.md](update_procedure_ru.md) — проверка, подготовка, обновление и восстановление.
-- [vserv_update_task_ru.md](vserv_update_task_ru.md) — задание агенту на обновление vserv и оставшиеся проверки #5.
+- [vserv_update_task_ru.md](vserv_update_task_ru.md) — историческое задание 0.2.0 и границы следующего отдельного выпуска.
+
+
+## Базарики и расширенное аудио
+
+- [bazariki_design_ru.md](bazariki_design_ru.md) — принятые требования #17–24.
+- [tariffs_ru.md](tariffs_ru.md) — опубликованный каталог agent-toolchain и клиент.
+- [money_ledger_ru.md](money_ledger_ru.md) — точный журнал, месяцы и миграция.
+- [financial_costs_ru.md](financial_costs_ru.md) — резерв и фактические расходы RouterAI.
+- [extended_audio_ru.md](extended_audio_ru.md) — отдельное право /trf и медиапроверка.
+- [money_ui_ru.md](money_ui_ru.md) — баланс, справки и подтверждения администратора.
+- [bzr_release_acceptance_ru.md](bzr_release_acceptance_ru.md) — PR/коммиты/файлы,
+  репозиторные испытания и оставшиеся условия эксплуатации #24.

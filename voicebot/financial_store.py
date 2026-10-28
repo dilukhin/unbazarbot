@@ -4,6 +4,7 @@ import hashlib
 
 from .money import MoneyError, to_atoms
 from .provider_costs import exact_cost, generation_id, GenerationCost
+from .release_contract import SUPPORTED_FINANCIAL_SCHEMA
 
 
 class FinancialStore:
@@ -36,6 +37,8 @@ class FinancialStore:
                     SELECT p.job_id,p.file_unique_id,COALESCE(j.provider_model,'legacy-unknown'), '0',0,'legacy',p.started_at
                     FROM paid_calls p LEFT JOIN transcription_jobs j ON j.id=p.job_id''')
                 await conn.execute("INSERT INTO money_meta VALUES('financial-legacy-v1')")
+            await conn.execute('INSERT OR IGNORE INTO money_meta VALUES(?)',
+                               (f'financial-schema:{SUPPORTED_FINANCIAL_SCHEMA}',))
 
     async def reserve_financial_call(self, *, quote, provider_model, require_extended=False, **kwargs):
         now=kwargs.get('at') or datetime.now(timezone.utc)

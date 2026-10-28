@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from types import SimpleNamespace
 import contextlib
 import asyncio
 import logging
@@ -34,6 +35,7 @@ from .formatter import RouterAIFormatter
 from .tariffs import PriceCatalog, Estimate
 from .diagnostics import about_text, system_text
 from .textfmt import chunks, user_label
+from .audio_validation import prepare_audio, AudioError
 
 
 @dataclass
@@ -43,6 +45,8 @@ class AppContext:
     transcriber: RouterAITranscriber
     formatter: RouterAIFormatter | None = None
     prices: PriceCatalog | None = None
+    audio_preparer: Any = prepare_audio
+    audio_slots: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(1))
 
 
 router = Router()
@@ -156,9 +160,9 @@ def validate_media(media: MediaRef, ctx: AppContext) -> str | None:
     if media.duration is not None and media.duration > ctx.config.max_audio_seconds:
         return f"Аудио слишком длинное: {media.duration} сек. Лимит: {ctx.config.max_audio_seconds} сек."
     if media.file_size is not None:
-        max_bytes = ctx.config.max_file_mb * 1024 * 1024
+        max_bytes = min(ctx.config.max_file_mb,20) * 1024 * 1024
         if media.file_size > max_bytes:
-            return f"Файл слишком большой: {media.file_size // 1024 // 1024} МБ. Лимит: {ctx.config.max_file_mb} МБ."
+            return f"Файл слишком большой: {media.file_size // 1024 // 1024} МБ. Лимит: {max_bytes // 1024 // 1024} МБ."
     return None
 
 
@@ -170,8 +174,13 @@ async def transcribe_message_media(
     model_alias: str,
     require_auto: bool = False,
     raw: bool = False,
+    extended: bool = False,
+    media_ref: MediaRef | None = None,
 ) -> None:
-    media = extract_media(target_message)
+    media = media_ref if extended and media_ref else extract_media(target_message,extended=extended)
+    if extended and not await ctx.db.extended_audio_allowed(message.from_user.id if message.from_user else None):
+        await message.answer('Для /trf требуется отдельное личное разрешение администратора.')
+        return
     if not media:
         await message.answer("В сообщении нет голосового сообщения Telegram. Используйте /tr в ответ на голосовое.")
         return
@@ -230,21 +239,11 @@ async def transcribe_message_media(
     )
 
     tmp_path: Path | None = None
+    prepared = None
+    slot_owned = False
     paid_started = False
     completed = False
     try:
-        tmp_path, telegram_file_path = await download_media_to_temp(bot, media)
-        audio_format = guess_audio_format(media, telegram_file_path, model_cfg.audio_format)
-        if tmp_path.stat().st_size > ctx.config.max_file_mb * 1024 * 1024:
-            raise ValueError('Скачанный файл превышает лимит размера')
-        # Recheck the current snapshot after the asynchronous download. A catalog
-        # that expired or changed while downloading cannot authorize inference.
-        estimate = quote()
-        if not estimate.available:
-            await ctx.db.fail_job(job_id, "TariffUnavailable")
-            if not require_auto:
-                await message.answer("Проверенная стоимость стала недоступна; платный запрос остановлен.")
-            return
         reason = await ctx.db.reserve_financial_call(
             quote=quote, provider_model=model_cfg.provider_model,
             job_id=job_id, chat_id=message.chat.id,
@@ -254,12 +253,24 @@ async def transcribe_message_media(
             limits=ctx.config.budget,
             allow_private_admins=ctx.config.allow_private_transcription_for_admins,
             require_auto=require_auto,
+            require_extended=extended,
         )
         if reason:
             await ctx.db.fail_job(job_id, reason)
             if not require_auto:
                 await message.answer(reason)
             return
+        if ctx.audio_slots.locked():
+            raise MoneyError('Бот занят подготовкой аудио. Повторите позже.')
+        await ctx.audio_slots.acquire()
+        slot_owned = True
+        max_bytes=min(ctx.config.max_file_mb*1024*1024,20*1024*1024)
+        tmp_path, telegram_file_path = await download_media_to_temp(bot, media, max_bytes=max_bytes)
+        prepared = await ctx.audio_preparer(tmp_path,max_seconds=ctx.config.max_audio_seconds,
+                                            max_bytes=max_bytes,audio_format=model_cfg.audio_format or 'ogg')
+        await ctx.db.adjust_reserved_seconds(job_id,prepared.seconds,ctx.config.budget)
+        ctx.audio_slots.release()
+        slot_owned = False
         estimate = quote()
         if not estimate.available:
             await ctx.db.fail_job(job_id, "TariffUnavailable")
@@ -272,9 +283,9 @@ async def transcribe_message_media(
         await before_send()
         paid_started = True
         result = await ctx.transcriber.transcribe(
-            tmp_path,
+            prepared.path,
             model=model_cfg.provider_model,
-            audio_format=audio_format,
+            audio_format=prepared.audio_format,
             language=ctx.config.language,
             temperature=ctx.config.temperature,
             before_send=before_send,
@@ -317,8 +328,8 @@ async def transcribe_message_media(
         if not released:
             await asyncio.shield(ctx.db.finish_paid_call(job_id, 'interrupted'))
             await asyncio.shield(ctx.db.interrupt_financial_call(job_id))
-        if paid_started and not completed:
-            await asyncio.shield(ctx.db.fail_job(job_id, 'Процесс прерван; исход оплаты неизвестен'))
+        if not completed:
+            await asyncio.shield(ctx.db.fail_job(job_id, 'Отменено до отправки' if released else 'Процесс прерван; исход оплаты неизвестен'))
         raise
     except Exception as exc:
         if not completed:
@@ -329,9 +340,13 @@ async def transcribe_message_media(
         if not released:
             await ctx.db.interrupt_financial_call(job_id,getattr(exc,'generation_id',None))
         logging.error('Ошибка задания распознавания: %s', type(exc).__name__)
-        if not require_auto or (not released and not isinstance(exc,MoneyError)):
-            await message.answer('Не удалось завершить распознавание. Администратор может проверить состояние задания; платный вызов автоматически не повторяется.')
+        if not require_auto or (not released and not isinstance(exc,(MoneyError,AudioError))):
+            await message.answer(str(exc) if isinstance(exc,(MoneyError,AudioError)) else 'Не удалось завершить распознавание. Администратор может проверить состояние задания; платный вызов автоматически не повторяется.')
     finally:
+        if slot_owned:
+            ctx.audio_slots.release()
+        if prepared is not None:
+            prepared.close()
         if tmp_path:
             with contextlib.suppress(Exception):
                 tmp_path.unlink(missing_ok=True)
@@ -534,7 +549,7 @@ async def cmd_auto_off(message: Message, ctx: AppContext, bot: Bot) -> None:
 async def cmd_transcribe(message: Message, command: CommandObject, ctx: AppContext, bot: Bot) -> None:
     target = message.reply_to_message
     if not target or not target.voice:
-        await message.answer("Используйте /tr в ответ на голосовое сообщение Telegram. Музыка и аудиофайлы не распознаются.")
+        await message.answer("Используйте /tr в ответ на голосовое сообщение Telegram. Для аудиофайлов предусмотрена отдельная команда /trf и отдельное разрешение.")
         return
     if not await check_access_for_transcription(message, ctx, bot):
         return
@@ -543,6 +558,62 @@ async def cmd_transcribe(message: Message, command: CommandObject, ctx: AppConte
         await transcribe_message_media(message, target, ctx, bot, model_alias, raw=True)
     else:
         await transcribe_message_media(message, target, ctx, bot, model_alias)
+
+
+@router.message(Command('trf'))
+async def cmd_trf(message: Message, command: CommandObject, ctx: AppContext, bot: Bot) -> None:
+    user=message.from_user
+    if not user or user.is_bot or message.sender_chat is not None:
+        await message.answer('Для /trf требуется достоверный пользователь Telegram.')
+        return
+    if not await ctx.db.extended_audio_allowed(user.id):
+        await message.answer('Для /trf требуется отдельное личное разрешение администратора.')
+        return
+    if not await check_access_for_transcription(message,ctx,bot):return
+    target=message.reply_to_message
+    if target is None and is_private_chat(message) and extract_media(message,extended=True):target=message
+    args=(command.args or '').strip()
+    if args=='?':
+        rows=[];buttons=[];tokens=[]
+        media=extract_media(target,extended=True) if target else None
+        for alias,model in ctx.config.models.items():
+            estimate=ctx.prices.estimate_audio(model.provider_model,ctx.config.max_audio_seconds+1) if ctx.prices else Estimate('unavailable')
+            label=f'{alias}: до {estimate.max_rub:f} ₽' if estimate.available else f'{alias}: стоимость недоступна ({estimate.status})'
+            rows.append(label)
+            if media is not None and estimate.available:
+                token=await ctx.db.create_trf_choice(user.id,message.chat.id,target.message_id,alias,media)
+                tokens.append(token);buttons.append([(label,'trfm:'+token)])
+        sent=await message.answer('Модели /trf. Предварительный резерв рассчитан на предельную длительность:\n'+'\n'.join(rows)+
+                                  ('\nОтветьте командой /trf ? на аудио для выбора.' if target is None else ''),
+                                  reply_markup=keyboard(buttons) if buttons else None)
+        if tokens:await ctx.db.bind_trf_choice(tokens,sent.message_id)
+        return
+    if target is None or extract_media(target,extended=True) is None:
+        await message.answer('Используйте /trf [модель] в ответ на voice, audio или документ с аудио. В личке можно добавить /trf в подпись файла.')
+        return
+    if args and args not in ctx.config.models:
+        await message.answer('Неизвестная модель. Доступные варианты: /trf ? в ответ на файл.')
+        return
+    alias=args or await resolve_model_alias(message,None,ctx)
+    await transcribe_message_media(message,target,ctx,bot,alias,extended=True)
+
+
+@router.callback_query(F.data.startswith('trfm:'))
+async def trf_model_choice(callback: CallbackQuery, ctx: AppContext, bot: Bot) -> None:
+    if not isinstance(callback.message,Message) or callback.from_user.is_bot:
+        await callback.answer('Кнопка недоступна.');return
+    row=await ctx.db.consume_trf_choice(callback.data[5:],callback.from_user.id,
+                                       callback.message.chat.id,callback.message.message_id)
+    if row is None:
+        await callback.answer('Это чужая, использованная или просроченная кнопка.');return
+    alias,target_id,media=row
+    if alias not in ctx.config.models:
+        await callback.answer('Модель недоступна. Откройте новое меню.');return
+    caller=callback.message.model_copy(update={'from_user':callback.from_user,'sender_chat':None})
+    if not await check_access_for_transcription(caller,ctx,bot):
+        await callback.answer('Доступ недоступен.');return
+    await callback.answer()
+    await transcribe_message_media(caller,SimpleNamespace(message_id=target_id),ctx,bot,alias,extended=True,media_ref=media)
 
 
 @router.message(F.voice)

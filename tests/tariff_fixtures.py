@@ -5,8 +5,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from voicebot.tariffs import PriceCatalog, content_hash, parse_document
+from voicebot.audio_validation import PreparedAudio
+from decimal import Decimal
 
 NOW = datetime(2026, 10, 28, 12, 2, tzinfo=timezone.utc)
+
+
+async def prepare_synthetic_audio(path, **kwargs):
+    return PreparedAudio(Path(path),Decimal('3'),kwargs.get('audio_format','ogg'))
 GOLDEN = Path(__file__).parent / 'fixtures/routerai_prices_published.json'
 
 

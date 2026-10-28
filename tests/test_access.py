@@ -1,4 +1,4 @@
-from tests.tariff_fixtures import catalog as synthetic_catalog
+from tests.tariff_fixtures import catalog as synthetic_catalog, prepare_synthetic_audio
 import asyncio
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -83,6 +83,7 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         self.session = RecordingSession()
         self.bot = Bot('123456:TEST', session=self.session)
         self.ctx = AppContext(config(), self.db, AsyncMock())
+        self.ctx.audio_preparer=prepare_synthetic_audio
         from voicebot.money import MoneySettings
         self.db.money_settings=MoneySettings(global_daily_rub='100')
         self.ctx.prices = synthetic_catalog(Path(self.tmp.name) / "prices.json", [m.provider_model for m in self.ctx.config.models.values()])
@@ -243,7 +244,7 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         req = await self.request()
         await self.db.decide_access_request(req.id, 'approve_forever', 1)
         audio = Path(self.tmp.name) / 'test.ogg'
-        async def download(*args):
+        async def download(*args,**kwargs):
             audio.write_bytes(b'test')
             row = await self.db.access_subject('user', 2)
             await self.db.change_access('user', 2, 'revoke', 1, row['revision'])

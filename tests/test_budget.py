@@ -1,4 +1,4 @@
-from tests.tariff_fixtures import catalog as synthetic_catalog
+from tests.tariff_fixtures import catalog as synthetic_catalog, prepare_synthetic_audio
 import asyncio
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -150,6 +150,7 @@ class PipelineTests(DatabaseCase):
         self.db.money_settings=MoneySettings(global_daily_rub='100')
         self.config=load_config('config.example.yaml')
         self.ctx=AppContext(self.config,self.db,AsyncMock())
+        self.ctx.audio_preparer=prepare_synthetic_audio
         self.ctx.prices=synthetic_catalog(Path(self.tmp.name)/"prices.json", [m.provider_model for m in self.config.models.values()])
         self.bot=AsyncMock()
         self.ctx.transcriber.transcribe.return_value=SimpleNamespace(text='Текст.',cost=0,duration_seconds=3)
@@ -197,14 +198,14 @@ class PipelineTests(DatabaseCase):
     async def test_expiry_during_download_blocks_before_reservation(self):
         from datetime import timedelta
         from tests.tariff_fixtures import NOW
-        async def download(*args):
+        async def download(*args,**kwargs):
             result=await self.download(*args)
             self.ctx.prices.clock=lambda:NOW+timedelta(days=3)
             return result
         message=self.message()
         with patch('voicebot.handlers.download_media_to_temp',side_effect=download), patch.object(self.db,'reserve_paid_call',wraps=self.db.reserve_paid_call) as reserve:
             await transcribe_message_media(message,message,self.ctx,self.bot,self.config.default_model)
-        reserve.assert_not_awaited();self.ctx.transcriber.transcribe.assert_not_awaited()
+        reserve.assert_awaited_once();self.ctx.transcriber.transcribe.assert_not_awaited()
 
     async def test_expiry_during_reservation_blocks_provider(self):
         from datetime import timedelta
@@ -232,7 +233,7 @@ class PipelineTests(DatabaseCase):
             from_user=SimpleNamespace(id=user),voice=voice,audio=None,document=None,message_id=1,
             reply_to_message=None,answer=AsyncMock())
 
-    async def download(self, *args):
+    async def download(self, *args, **kwargs):
         path=Path(self.tmp.name)/'audio.ogg';path.write_bytes(b'audio');return path,'voice.ogg'
 
     async def test_cache_hit_never_downloads_or_pays_again(self):
@@ -249,7 +250,7 @@ class PipelineTests(DatabaseCase):
             started.set();await release.wait()
             return SimpleNamespace(text='Текст.',cost=0,duration_seconds=3)
         self.ctx.transcriber.transcribe.side_effect=transcribe
-        async def download(*args):
+        async def download(*args,**kwargs):
             path=Path(self.tmp.name)/('audio'+str(id(asyncio.current_task()))+'.ogg')
             path.write_bytes(b'audio');return path,'voice.ogg'
         message=self.message()

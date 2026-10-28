@@ -5,10 +5,13 @@ from pathlib import Path
 from typing import Any
 import base64
 import math
+import json
 from decimal import Decimal
 
 import httpx
 from .provider_costs import decode_response, usage_cost, generation_id, generation_cost
+
+MAX_STT_REQUEST_BYTES=32*1024*1024
 
 
 @dataclass
@@ -57,6 +60,12 @@ class RouterAITranscriber:
         }
         if temperature is not None:
             payload["temperature"] = temperature
+        try:
+            body=json.dumps(payload,ensure_ascii=False,allow_nan=False,separators=(',',':')).encode('utf-8')
+        except (ValueError,UnicodeError):
+            raise ProviderCallError('Invalid RouterAI request',sent=False) from None
+        if len(body)>MAX_STT_REQUEST_BYTES:
+            raise ProviderCallError('RouterAI request body exceeds limit',sent=False)
 
         try:
             client_context = httpx.AsyncClient(timeout=self.timeout,follow_redirects=False)
@@ -74,7 +83,7 @@ class RouterAITranscriber:
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
                 },
-                json=payload,
+                content=body,
             )
 
         if response.status_code >= 400:

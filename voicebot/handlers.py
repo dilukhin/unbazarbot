@@ -26,6 +26,10 @@ from .config import AppConfig
 from .db import Database, AccessRequest
 from .media import MediaRef, download_media_to_temp, extract_media, guess_audio_format
 from .stt_routerai import RouterAITranscriber
+from .stt_routerai import ProviderCallError
+from .provider_costs import GenerationCost, generation_id
+from .money import to_atoms, MoneyError
+from decimal import Decimal, localcontext
 from .formatter import RouterAIFormatter
 from .tariffs import PriceCatalog, Estimate
 from .diagnostics import about_text, system_text
@@ -174,11 +178,12 @@ async def transcribe_message_media(
 
     validation_error = validate_media(media, ctx)
     if validation_error:
-        await message.answer(validation_error)
+        if not require_auto:
+            await message.answer(validation_error)
         return
 
     model_cfg = ctx.config.model(model_alias)
-    cached = await ctx.db.cached_transcript(media.file_unique_id, model_alias)
+    cached = await ctx.db.cached_transcript(media.file_unique_id, model_alias, model_cfg.provider_model)
     if cached:
         text = str(cached["transcript"])
         if not raw and ctx.config.formatter.enabled and cached.get('formatter_signature') == ctx.config.formatter.signature:
@@ -194,13 +199,25 @@ async def transcribe_message_media(
         return (ctx.prices.estimate_audio(model_cfg.provider_model, ctx.config.max_audio_seconds + 1)
                 if ctx.prices else Estimate("unavailable", "catalog-service-missing"))
 
+    if not require_auto and (message.from_user is None or getattr(message.from_user,'is_bot',False) or getattr(message,'sender_chat',None) is not None):
+        await message.answer('Для личного списания требуется достоверный пользователь Telegram.')
+        return
+
     estimate = quote()
     if not estimate.available:
         if not require_auto:
             await message.answer("Новый платный запрос недоступен: нет безопасной проверенной оценки стоимости (" + estimate.status + "). Кеш остаётся доступен.")
         return
 
-    await message.answer(f"Распознаю аудио моделью {model_alias}…", reply_to_message_id=target_message.message_id)
+    if require_auto:
+        try:
+            balance = await ctx.db.money_balance('group', message.chat.id)
+            if balance['free_atoms'] + balance['extra_atoms'] < to_atoms(estimate.max_rub, rub=True):
+                return
+        except MoneyError:
+            return
+    else:
+        await message.answer(f"Распознаю аудио моделью {model_alias}…", reply_to_message_id=target_message.message_id)
 
     job_id = await ctx.db.create_job(
         chat_id=message.chat.id,
@@ -228,7 +245,8 @@ async def transcribe_message_media(
             if not require_auto:
                 await message.answer("Проверенная стоимость стала недоступна; платный запрос остановлен.")
             return
-        reason = await ctx.db.reserve_paid_call(
+        reason = await ctx.db.reserve_financial_call(
+            quote=quote, provider_model=model_cfg.provider_model,
             job_id=job_id, chat_id=message.chat.id,
             user_id=message.from_user.id if message.from_user else None,
             private=is_private_chat(message), file_unique_id=media.file_unique_id,
@@ -239,15 +257,19 @@ async def transcribe_message_media(
         )
         if reason:
             await ctx.db.fail_job(job_id, reason)
-            await message.answer(reason)
+            if not require_auto:
+                await message.answer(reason)
             return
         estimate = quote()
         if not estimate.available:
             await ctx.db.fail_job(job_id, "TariffUnavailable")
-            await ctx.db.finish_paid_call(job_id, "interrupted")
+            await ctx.db.release_financial_not_sent(job_id)
             if not require_auto:
                 await message.answer("Проверенная стоимость стала недоступна; платный запрос остановлен.")
             return
+        async def before_send():
+            await ctx.db.mark_financial_sending(job_id, quote, ctx.config.allow_private_transcription_for_admins)
+        await before_send()
         paid_started = True
         result = await ctx.transcriber.transcribe(
             tmp_path,
@@ -255,19 +277,32 @@ async def transcribe_message_media(
             audio_format=audio_format,
             language=ctx.config.language,
             temperature=ctx.config.temperature,
+            before_send=before_send,
         )
         output_text = result.text
         # Additional paid formatting requires its own atomic monetary reserve (#20).
         # Until then persist and return STT directly, including when legacy config
         # still enables formatter. Existing formatted cache remains free to read.
-        await ctx.db.complete_paid_job(job_id, result.text, result.cost, result.duration_seconds)
+        await ctx.db.record_financial_response(job_id, result)
         completed = True
+        details = GenerationCost('unavailable')
+        identity = generation_id(getattr(result,'generation_id',None))
+        if identity:
+            details = await ctx.transcriber.generation_cost(identity,model_cfg.provider_model)
+        await ctx.db.finalize_financial_response(job_id,details)
+        financial = await ctx.db.financial_call(job_id)
+        if financial and financial['state']=='overrun':
+            for destination in await ctx.db.admin_private_chats():
+                with contextlib.suppress(Exception):
+                    await bot.send_message(destination,'Расход превысил резерв. Модель приостановлена: '+model_cfg.provider_model+'. Задание: '+job_id)
 
         meta = f"Расшифровка · модель: {model_alias}"
         if result.duration_seconds is not None:
             meta += f" · {result.duration_seconds:.1f} сек"
         if result.cost is not None:
-            meta += f" · стоимость распознавания: {result.cost:g}"
+            meta += f" · расход RouterAI по ответу: {result.cost:g} ₽"
+        if financial and financial['state']!='settled':
+            meta += ' · стоимость ожидает сверки'
         meta += "\n\n"
 
         first = True
@@ -277,9 +312,11 @@ async def transcribe_message_media(
     except asyncio.CancelledError:
         if paid_started and not completed:
             # Commit may have succeeded immediately before cancellation was delivered.
-            completed = bool(await asyncio.shield(ctx.db.cached_transcript(media.file_unique_id, model_alias)))
-        if paid_started:
+            completed = bool(await asyncio.shield(ctx.db.cached_transcript(media.file_unique_id, model_alias, model_cfg.provider_model)))
+        released = await asyncio.shield(ctx.db.release_financial_not_sent(job_id))
+        if not released:
             await asyncio.shield(ctx.db.finish_paid_call(job_id, 'interrupted'))
+            await asyncio.shield(ctx.db.interrupt_financial_call(job_id))
         if paid_started and not completed:
             await asyncio.shield(ctx.db.fail_job(job_id, 'Процесс прерван; исход оплаты неизвестен'))
         raise
@@ -288,8 +325,12 @@ async def transcribe_message_media(
             await ctx.db.fail_job(job_id, type(exc).__name__)
         if paid_started:
             await ctx.db.finish_paid_call(job_id, 'error')
+        released = await ctx.db.release_financial_not_sent(job_id, proven_not_sent=isinstance(exc,ProviderCallError) and not exc.sent)
+        if not released:
+            await ctx.db.interrupt_financial_call(job_id,getattr(exc,'generation_id',None))
         logging.error('Ошибка задания распознавания: %s', type(exc).__name__)
-        await message.answer('Не удалось завершить распознавание. Администратор может проверить состояние задания; платный вызов автоматически не повторяется.')
+        if not require_auto or (not released and not isinstance(exc,MoneyError)):
+            await message.answer('Не удалось завершить распознавание. Администратор может проверить состояние задания; платный вызов автоматически не повторяется.')
     finally:
         if tmp_path:
             with contextlib.suppress(Exception):
@@ -357,10 +398,15 @@ async def cmd_stats(message: Message, ctx: AppContext) -> None:
     calls = sum(row['calls'] for row in rows)
     minutes = sum(row['seconds'] for row in rows) / 60
     known = sum(row['known_cost'] for row in rows)
+    with localcontext() as decimal_context:
+        decimal_context.prec=500
+        exact_known=sum((row['known_cost_rub'] for row in rows),Decimal(0))
     unknown = sum(row['unknown_cost'] for row in rows)
     limits = ctx.config.budget
+    # Legacy REAL figures remain visibly separate from exact new RUB accounting.
     lines = [f'За сутки UTC: {calls} новых попыток; зарезервировано {minutes:g} мин из {limits.daily_minutes_total}.',
-             f'Сообщённая провайдером стоимость: {known:g}; без сведений об оплате: {unknown}.',
+             f'Точный подтверждённый расход: {exact_known:f} ₽; ожидают сверки: {unknown}.',
+             f'Историческая оценка прежнего учёта: {known:g}.',
              f'Лимиты минут: чат {limits.daily_minutes_chat}, человек {limits.daily_minutes_user}.',
              f'Запросов в минуту: чат {limits.requests_per_minute_chat}, человек {limits.requests_per_minute_user}.']
     lines.append(ctx.prices.summary() if ctx.prices else "Тарифы: unavailable; денежный каталог не подключён.")

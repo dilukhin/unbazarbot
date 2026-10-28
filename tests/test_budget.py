@@ -13,6 +13,7 @@ from voicebot.db import Database
 from voicebot.handlers import AppContext, cmd_stats, cmd_transcribe, media_auto_or_private, transcribe_message_media, validate_media
 from voicebot.media import MediaRef
 from voicebot.paid_store import BudgetLimits
+from voicebot.money import MoneySettings
 
 
 class DatabaseCase(unittest.IsolatedAsyncioTestCase):
@@ -146,6 +147,7 @@ class BudgetTests(DatabaseCase):
 class PipelineTests(DatabaseCase):
     async def asyncSetUp(self):
         await super().asyncSetUp()
+        self.db.money_settings=MoneySettings(global_daily_rub='100')
         self.config=load_config('config.example.yaml')
         self.ctx=AppContext(self.config,self.db,AsyncMock())
         self.ctx.prices=synthetic_catalog(Path(self.tmp.name)/"prices.json", [m.provider_model for m in self.config.models.values()])
@@ -159,6 +161,23 @@ class PipelineTests(DatabaseCase):
             await transcribe_message_media(message,message,self.ctx,self.bot,self.config.default_model)
         download.assert_not_awaited();self.ctx.transcriber.transcribe.assert_not_awaited()
         self.assertIn('проверенной оценки',str(message.answer.call_args_list))
+
+    async def test_group_exhaustion_is_silent_and_manual_uses_personal_budget(self):
+        self.db.money_settings=MoneySettings(group_monthly_bazariki='0',global_daily_rub='100')
+        await self.db.ensure_group(-100,'Synthetic')
+        req=await self.db.create_access_request('group',-100,'Synthetic',1,None,'synthetic',0)
+        await self.db.decide_access_request(req.id,'approve_forever',1)
+        await self.db.set_group_auto(-100,True)
+        message=self.message(chat=-100)
+        with patch('voicebot.handlers.download_media_to_temp',new_callable=AsyncMock) as download:
+            await transcribe_message_media(message,message,self.ctx,self.bot,self.config.default_model,require_auto=True)
+        message.answer.assert_not_awaited();download.assert_not_awaited()
+        self.assertTrue((await self.db.get_group(-100)).auto_enabled)
+        with patch('voicebot.handlers.download_media_to_temp',side_effect=self.download):
+            await transcribe_message_media(message,message,self.ctx,self.bot,self.config.default_model)
+        self.ctx.transcriber.transcribe.assert_awaited_once()
+        row=await (await self.db.db.execute("SELECT kind,subject_id FROM financial_calls WHERE state='settled'")).fetchone()
+        self.assertEqual((row['kind'],row['subject_id']),('user',1))
 
     async def test_stale_tariffs_leave_cached_result_free_but_block_new_file(self):
         from datetime import timedelta

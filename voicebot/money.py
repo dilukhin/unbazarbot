@@ -77,10 +77,12 @@ def period(anchor: datetime, at: datetime) -> tuple[str, str]:
 class MoneySettings:
     user_monthly_bazariki: str = '1000'
     group_monthly_bazariki: str = '10000'
+    global_daily_rub: str = '0'
 
     def __post_init__(self):
         to_atoms(self.user_monthly_bazariki)
         to_atoms(self.group_monthly_bazariki)
+        to_atoms(self.global_daily_rub,rub=True)
 
     def monthly(self, kind):
         if kind not in {'user', 'group'}:

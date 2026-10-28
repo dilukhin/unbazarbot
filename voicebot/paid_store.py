@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from contextlib import asynccontextmanager
+from decimal import Decimal, localcontext
 
 
 @dataclass(frozen=True)
@@ -13,6 +15,14 @@ class BudgetLimits:
 
 
 class PaidStore:
+    @asynccontextmanager
+    async def paid_transaction(self, conn=None):
+        if conn is not None:
+            yield conn
+        else:
+            async with self.access_transaction() as tx:
+                yield tx
+
     async def init_paid_schema(self):
         async with self.access_transaction() as conn:
             await conn.execute('''CREATE TABLE IF NOT EXISTS paid_calls(
@@ -40,6 +50,7 @@ class PaidStore:
                 ('paid_calls','access_revision','INTEGER'),
                 ('paid_calls','private_chat','INTEGER NOT NULL DEFAULT 0'),
                 ('paid_calls','auto_required','INTEGER NOT NULL DEFAULT 0'),
+                ('paid_calls','display_alias','TEXT'),
             ):
                 columns=await (await conn.execute(f'PRAGMA table_info({table})')).fetchall()
                 if column not in {row['name'] for row in columns}:
@@ -54,7 +65,7 @@ class PaidStore:
 
     async def reserve_paid_call(self, *, job_id, chat_id, user_id, private,
                                 file_unique_id, model_alias, seconds, limits,
-                                allow_private_admins=True, require_auto=False, at=None):
+                                allow_private_admins=True, require_auto=False, at=None, conn=None):
         stamp = at or datetime.now(timezone.utc)
         if stamp.tzinfo is None:
             raise ValueError('Timezone is required')
@@ -62,7 +73,7 @@ class PaidStore:
         minute = (stamp - timedelta(minutes=1)).isoformat()
         day = stamp.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         seconds = max(1, int(seconds))
-        async with self.access_transaction() as conn:
+        async with self.paid_transaction(conn) as conn:
             if private:
                 admin = await self._admin_in_transaction(conn, user_id)
                 row = await (await conn.execute('SELECT status,revision FROM private_users WHERE user_id=?', (user_id,))).fetchone()
@@ -108,8 +119,8 @@ class PaidStore:
                                (revision,int(private),int(require_auto),job_id))
             return None
 
-    async def formatting_access_allowed(self,job_id,allow_private_admins):
-        async with self.access_transaction() as conn:
+    async def formatting_access_allowed(self,job_id,allow_private_admins,conn=None):
+        async with self.paid_transaction(conn) as conn:
             call=await (await conn.execute('SELECT * FROM paid_calls WHERE job_id=?',(job_id,))).fetchone()
             if not call or call['state']!='running':
                 return False
@@ -150,8 +161,22 @@ class PaidStore:
     async def usage_today(self, at=None):
         stamp = (at or datetime.now(timezone.utc)).astimezone(timezone.utc)
         day = stamp.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-        rows = await (await self.db.execute('''SELECT chat_id,model_alias,COUNT(*) AS calls,
-            SUM(reserved_seconds) AS seconds,SUM(COALESCE(cost,0)+COALESCE(formatter_cost,0)) AS known_cost,
-            SUM(cost IS NULL OR (formatter_state IN ('running','interrupted','done','error') AND formatter_cost IS NULL)) AS unknown_cost FROM paid_calls WHERE started_at>=?
-            GROUP BY chat_id,model_alias ORDER BY chat_id,model_alias''', (day,))).fetchall()
-        return [dict(row) for row in rows]
+        rows = await (await self.db.execute('''SELECT p.chat_id,COALESCE(p.display_alias,p.model_alias) AS model_alias,COUNT(*) AS calls,
+            SUM(p.reserved_seconds) AS seconds,
+            SUM(CASE WHEN f.job_id IS NULL OR f.state='legacy' THEN COALESCE(p.cost,0)+COALESCE(p.formatter_cost,0) ELSE 0 END) AS known_cost,
+            SUM(CASE WHEN f.job_id IS NULL OR f.state='legacy' THEN
+                (p.cost IS NULL OR (p.formatter_state IN ('running','interrupted','done','error') AND p.formatter_cost IS NULL))
+                ELSE f.state!='settled' END) AS unknown_cost
+            FROM paid_calls p LEFT JOIN financial_calls f ON f.job_id=p.job_id WHERE p.started_at>=?
+            GROUP BY p.chat_id,COALESCE(p.display_alias,p.model_alias) ORDER BY p.chat_id,model_alias''', (day,))).fetchall()
+        result = [dict(row,known_cost_rub=Decimal(0)) for row in rows]
+        financial=await (await self.db.execute('''SELECT p.chat_id,COALESCE(p.display_alias,p.model_alias) AS model_alias,f.final_rub
+            FROM financial_calls f JOIN paid_calls p ON p.job_id=f.job_id
+            WHERE p.started_at>=? AND f.state='settled' ''',(day,))).fetchall()
+        with localcontext() as ctx:
+            ctx.prec=500
+            for entry in financial:
+                for row in result:
+                    if (row['chat_id'],row['model_alias'])==(entry['chat_id'],entry['model_alias']):
+                        row['known_cost_rub']+=Decimal(entry['final_rub'])
+        return result

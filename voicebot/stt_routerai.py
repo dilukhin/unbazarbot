@@ -5,16 +5,25 @@ from pathlib import Path
 from typing import Any
 import base64
 import math
+from decimal import Decimal
 
 import httpx
+from .provider_costs import decode_response, usage_cost, generation_id, generation_cost
 
 
 @dataclass
 class TranscriptionResult:
     text: str
     raw: dict[str, Any]
-    cost: float | None = None
+    cost: Decimal | None = None
     duration_seconds: float | None = None
+    generation_id: str | None = None
+
+
+class ProviderCallError(RuntimeError):
+    def __init__(self, message, *, sent, identity=None):
+        super().__init__(message)
+        self.sent, self.generation_id = sent, generation_id(identity)
 
 
 class RouterAITranscriber:
@@ -31,9 +40,13 @@ class RouterAITranscriber:
         audio_format: str,
         language: str = "ru",
         temperature: float | None = None,
+        before_send=None,
     ) -> TranscriptionResult:
         audio_path = Path(audio_path)
-        encoded = base64.b64encode(audio_path.read_bytes()).decode("utf-8")
+        try:
+            encoded = base64.b64encode(audio_path.read_bytes()).decode("utf-8")
+        except (OSError,ValueError):
+            raise ProviderCallError('Audio preparation failed',sent=False) from None
         payload: dict[str, Any] = {
             "model": model,
             "input_audio": {
@@ -45,7 +58,16 @@ class RouterAITranscriber:
         if temperature is not None:
             payload["temperature"] = temperature
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        try:
+            client_context = httpx.AsyncClient(timeout=self.timeout,follow_redirects=False)
+        except (ValueError,RuntimeError,ImportError) as exc:
+            raise ProviderCallError('RouterAI client setup failed',sent=False) from None
+        async with client_context as client:
+            if before_send is not None:
+                try:
+                    await before_send()
+                except Exception:
+                    raise ProviderCallError('Pre-send checks refused',sent=False) from None
             response = await client.post(
                 f"{self.base_url}/audio/transcriptions",
                 headers={
@@ -56,26 +78,32 @@ class RouterAITranscriber:
             )
 
         if response.status_code >= 400:
-            raise RuntimeError(f"RouterAI HTTP {response.status_code}")
+            raise ProviderCallError(f"RouterAI HTTP {response.status_code}",sent=True,identity=response.headers.get('X-Generation-Id'))
 
-        data = response.json()
+        try:
+            data = decode_response(response)
+        except (ValueError,UnicodeError):
+            raise ProviderCallError('RouterAI returned invalid JSON',sent=True,identity=response.headers.get('X-Generation-Id')) from None
         if not isinstance(data, dict):
             raise RuntimeError('RouterAI returned an invalid response')
         text = self._extract_text(data)
         if not text:
-            raise RuntimeError('RouterAI returned no text')
+            raise ProviderCallError('RouterAI returned no text',sent=True,identity=response.headers.get('X-Generation-Id'))
 
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
-        cost = next((self._as_float(value) for value in
-                     (usage.get('cost'), usage.get('total_cost'), data.get('cost'))
-                     if self._as_float(value) is not None), None)
+        cost = usage_cost(data)
         duration = self._as_float(
-            (usage or {}).get("duration_seconds")
+            (usage or {}).get("seconds")
+            or (usage or {}).get("duration_seconds")
             or (usage or {}).get("duration")
             or data.get("duration_seconds")
             or data.get("duration")
         )
-        return TranscriptionResult(text=text.strip(), raw=data, cost=cost, duration_seconds=duration)
+        return TranscriptionResult(text=text.strip(), raw=data, cost=cost, duration_seconds=duration,
+                                   generation_id=generation_id(response.headers.get('X-Generation-Id')))
+
+    async def generation_cost(self, identity, model):
+        return await generation_cost(self.api_key,self.base_url,identity,model)
 
     @staticmethod
     def _extract_text(data: dict[str, Any]) -> str:

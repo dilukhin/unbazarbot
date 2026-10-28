@@ -31,7 +31,7 @@ def keyboard(rows):
 
 
 def home_keyboard():
-    return keyboard([[(label, f"acc:list:{kind}:0")] for kind, label in LABELS.items()])
+    return keyboard([[(label, f"acc:list:{kind}:0")] for kind, label in LABELS.items()]+[[('Бюджеты','mu:home')]])
 
 
 def request_keyboard():
@@ -153,6 +153,7 @@ async def show_card(message, ctx, kind, target_id):
         if kind == 'group' and row['status'] == 'approved_once':
             buttons.append([('Разрешить постоянно',
                              f'acc:confirm:{kind}:{target_id}:{row["revision"]}:approve_forever')])
+    buttons.append([('Бюджет и права /trf' if kind=='user' else 'Бюджет авто',f'mu:view:{kind}:{target_id}')])
     buttons.append([(f'Список: {LABELS[kind]}', f'acc:list:{kind}:0'), ('Меню доступа', 'acc:home')])
     await message.answer(text, reply_markup=keyboard(buttons))
 

@@ -35,6 +35,7 @@ from .formatter import RouterAIFormatter
 from .tariffs import PriceCatalog, Estimate
 from .diagnostics import about_text, system_text
 from .textfmt import chunks, user_label
+from .money_text import amount as money_amount_text, date as money_date, tariff_status
 from .audio_validation import prepare_audio, AudioError
 
 
@@ -215,7 +216,7 @@ async def transcribe_message_media(
     estimate = quote()
     if not estimate.available:
         if not require_auto:
-            await message.answer("Новый платный запрос недоступен: нет безопасной проверенной оценки стоимости (" + estimate.status + "). Кеш остаётся доступен.")
+            await message.answer("Новый платный запрос недоступен: нет безопасной проверенной оценки стоимости (" + tariff_status(estimate.status) + "). Кеш остаётся доступен.")
         return
 
     if require_auto:
@@ -375,21 +376,16 @@ async def cmd_start(message: Message, ctx: AppContext, state: FSMContext) -> Non
 @router.message(Command("help"))
 async def cmd_help(message: Message, ctx: AppContext) -> None:
     await message.answer(
-        "Команды:\n"
-        "/tr [model] — распознать голосовое сообщение из ответа\n"
-        "/tr_raw [model] — получить исходную расшифровку без оформления\n"
-        "/model — список моделей\n"
-        "/model set <alias> — выбрать модель для текущего чата\n"
-        "/status — статус текущего чата\n"
-        "/about — назначение и версия бота\n"
-        "/auto_on, /auto_off — авто-распознавание новых voice в группе\n\n"
-        "Админские в личке:\n"
-        "/access — управление доступом людей и групп\n"
-        "/stats — расход и лимиты за сутки UTC\n"
-        "/system — сервер и среда запуска\n"
-        "/requests — заявки людей и групп\n"
-        "/groups — список групп\n"
-        "/revoke <chat_id> — отозвать доступ"
+        "Голосовые сообщения в текст.\n"
+        "/tr [модель] — ответ на голосовое\n"
+        "/trf [модель] — аудиофайл, требуется отдельное разрешение\n"
+        "/model — модели и стоимость\n"
+        "/balance — личный баланс и история в личке\n"
+        "/status — доступ и состояние группы\n"
+        "/auto_on, /auto_off — автоматические voice в группе\n"
+        "/helphelp — подробная справка\n\n"
+        "Авто расходует бюджет группы, ручные команды — личные базарики.\n"
+        "Администратору в личке: /access, /stats."
     )
 
 
@@ -425,6 +421,10 @@ async def cmd_stats(message: Message, ctx: AppContext) -> None:
              f'Лимиты минут: чат {limits.daily_minutes_chat}, человек {limits.daily_minutes_user}.',
              f'Запросов в минуту: чат {limits.requests_per_minute_chat}, человек {limits.requests_per_minute_user}.']
     lines.append(ctx.prices.summary() if ctx.prices else "Тарифы: unavailable; денежный каталог не подключён.")
+    financial_states,frozen=await ctx.db.financial_diagnostics()
+    lines.append(f"Общий денежный предел новых вызовов: {ctx.config.money.global_daily_rub} ₽ за сутки UTC.")
+    lines.append(f"Ожидают финансовой сверки: {financial_states.get('unknown',0)}; расхождения: {financial_states.get('mismatch',0)}; перерасходы: {financial_states.get('overrun',0)}.")
+    if frozen:lines.append('Модели приостановлены: '+', '.join(frozen))
     for row in rows:
         lines.append(f"Чат {row['chat_id']}, модель {row['model_alias']}: {row['calls']} попыток, {row['seconds']/60:g} мин.")
     for part in chunks('\n'.join(lines)):
@@ -437,16 +437,40 @@ async def cmd_status(message: Message, ctx: AppContext) -> None:
         user_id = message.from_user.id if message.from_user else None
         is_admin = await ctx.db.is_admin(user_id)
         allowed = ctx.config.allow_private_transcription_for_admins if is_admin else await ctx.db.private_user_allowed(user_id)
+        short=''
+        if user_id and not getattr(message.from_user,'is_bot',False):
+            try:
+                await ctx.db.touch_money_user(user_id)
+                balance=await ctx.db.money_balance('user',user_id)
+                short=f"\nДоступно: {money_amount_text(balance['free_atoms']+balance['extra_atoms'])}; в резерве: {money_amount_text(balance['held_atoms'])}. /balance — история."
+            except MoneyError:
+                short='\nБаланс временно недоступен.'
         await message.answer(f"Личный чат. Администратор: {'да' if is_admin else 'нет'}. "
-                             f"Распознавание: {'разрешено' if allowed else 'запрещено'}.")
+                             f"Распознавание: {'разрешено' if allowed else 'запрещено'}."+short)
         return
     await ctx.db.ensure_group(message.chat.id, message.chat.title, message.chat.username, ctx.config.default_model)
     group = await ctx.db.get_group(message.chat.id)
+    budget_text='Групповой месячный бюджет ещё не открыт.'
+    if group:
+        try:
+            balance=await ctx.db.money_balance('group',message.chat.id)
+            available=balance['free_atoms']+balance['extra_atoms']
+            budget_text=f"Бюджет авто: {money_amount_text(available)}; в резерве: {money_amount_text(balance['held_atoms'])}.\nСледующее начисление: {money_date(balance['period_end'])}."
+            if group.auto_enabled:
+                model=ctx.config.model(group.default_model if group.default_model in ctx.config.models else None)
+                estimate=ctx.prices.estimate_audio(model.provider_model,ctx.config.max_audio_seconds+1) if ctx.prices else None
+                if available==0:budget_text+='\nАвто приостановлено бюджетом; настройка остаётся включённой.'
+                elif not estimate or not estimate.available:budget_text+='\nАвто ожидает проверенную стоимость модели.'
+                elif available<to_atoms(estimate.max_rub,rub=True):budget_text+='\nНедостаточно групповых средств для предварительного резерва.'
+                elif await (await ctx.db.db.execute('SELECT 1 FROM frozen_models WHERE provider_model=?',(model.provider_model,))).fetchone():budget_text+='\nАвто ожидает проверки стоимости модели.'
+                elif to_atoms(ctx.config.money.global_daily_rub,rub=True)==0:budget_text+='\nАвто ожидает открытия общего денежного лимита бота.'
+        except MoneyError:
+            pass
     await message.answer(
         f"Статус группы: {group.status if group else 'unknown'}\n"
-        f"Авто-режим: {'on' if group and group.auto_enabled else 'off'}\n"
+        f"Авто-режим: {'включён' if group and group.auto_enabled else 'выключен'}\n"
         f"Модель: {(group.default_model if group and group.default_model else ctx.config.default_model)}\n"
-        f"Осталось one-time jobs: {group.remaining_jobs if group else 0}"
+        f"Одноразовых распознаваний осталось: {group.remaining_jobs if group else 0}\n"+budget_text
     )
 
 

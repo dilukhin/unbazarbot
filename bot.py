@@ -19,6 +19,7 @@ from voicebot.runtime import InstanceLock
 from voicebot.tariffs import PriceCatalog
 from voicebot.formatter import RouterAIFormatter
 from voicebot.money_middleware import ExplicitMoneyInteraction
+from voicebot.money_ui import router as money_router
 
 
 async def main() -> None:
@@ -57,6 +58,7 @@ async def main() -> None:
         dp = Dispatcher()
         dp.message.outer_middleware(ExplicitMoneyInteraction())
         dp.callback_query.outer_middleware(ExplicitMoneyInteraction())
+        dp.include_router(money_router)
         dp.include_router(access_router)
         dp.include_router(router)
 

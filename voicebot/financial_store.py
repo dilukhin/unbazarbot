@@ -48,6 +48,7 @@ class FinancialStore:
             async with self.access_transaction() as conn:
                 if kind=='user' and (type(user_id) is not int or user_id<=0):
                     raise MoneyError('Нельзя определить личный счёт отправителя.')
+                self._money_subject(kind,subject)
                 extended_revision=None
                 if require_extended:
                     if kwargs.get('require_auto') or not await self.extended_audio_allowed(user_id,conn=conn):
@@ -90,6 +91,12 @@ class FinancialStore:
     async def financial_call(self, job_id):
         row=await (await self.db.execute('SELECT * FROM financial_calls WHERE job_id=?',(job_id,))).fetchone()
         return dict(row) if row else None
+
+    async def financial_diagnostics(self):
+        day=datetime.now(timezone.utc).replace(hour=0,minute=0,second=0,microsecond=0).isoformat()
+        rows=await (await self.db.execute("SELECT state,COUNT(*) AS count FROM financial_calls WHERE created_at>=? AND state!='legacy' GROUP BY state",(day,))).fetchall()
+        frozen=await (await self.db.execute('SELECT provider_model FROM frozen_models ORDER BY created_at LIMIT 10')).fetchall()
+        return {row['state']:row['count'] for row in rows},[row[0] for row in frozen]
 
     async def mark_financial_sending(self, job_id, quote, allow_private_admins):
         async with self.access_transaction() as conn:

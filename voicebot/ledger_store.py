@@ -38,6 +38,9 @@ class LedgerStore:
                 '''CREATE TABLE IF NOT EXISTS money_meta(key TEXT PRIMARY KEY)''',
             ):
                 await conn.execute(sql)
+            columns=await (await conn.execute('PRAGMA table_info(money_accounts)')).fetchall()
+            if 'quota_revision' not in {r['name'] for r in columns}:
+                await conn.execute('ALTER TABLE money_accounts ADD COLUMN quota_revision INTEGER NOT NULL DEFAULT 0')
             if not await (await conn.execute("SELECT 1 FROM money_meta WHERE key='anchors-v1'")).fetchone():
                 now = stamp()
                 # No legacy floating-point costs are imported or charged retroactively.
@@ -75,7 +78,7 @@ class LedgerStore:
 
     @staticmethod
     def _money_subject(kind, subject_id):
-        if kind not in {'user','group'} or type(subject_id) is not int or (subject_id <= 0 if kind == 'user' else subject_id >= 0):
+        if kind not in {'user','group'} or type(subject_id) is not int or not -(2**63)<=subject_id<2**63 or (subject_id <= 0 if kind == 'user' else subject_id >= 0):
             raise MoneyError('Invalid money subject')
 
     async def _money_account(self, conn, kind, subject_id, at, source):
@@ -196,19 +199,32 @@ class LedgerStore:
         await conn.execute('UPDATE money_reservations SET state=?,actual_rub=?,charged_atoms=?,updated_at=? WHERE reservation_id=?',(state,rub,charged,now,reservation_id))
         return charged
 
-    async def adjust_money(self, operation_id, kind, subject_id, amount_bazariki, *, admin_id, monthly=False, at=None):
+    async def adjust_money(self, operation_id, kind, subject_id, amount_bazariki, *, admin_id,
+                           monthly=False, period_only=False, debit=False, expected_revision=None, at=None, conn=None):
         atoms = to_atoms(amount_bazariki)
-        async with self.access_transaction() as conn:
+        if monthly and (period_only or debit):raise MoneyError('Invalid adjustment mode')
+        async with self.paid_transaction(conn) as conn:
             if not await self._admin_in_transaction(conn,admin_id):
                 raise MoneyError('Administrator required')
             balance = await self._money_balance(conn,kind,subject_id,at)
-            event = 'monthly-policy' if monthly else 'extra-grant'
+            event = 'monthly-policy' if monthly else ('current-correction' if debit else 'current-grant') if period_only else ('extra-correction' if debit else 'extra-grant')
             if not await self._money_entry(conn,'adjust:'+operation_id,kind,subject_id,event,{'atoms':atoms,'actor':admin_id},stamp(at)):
                 return
+            if expected_revision is not None and balance['quota_revision']!=expected_revision:
+                raise MoneyError('Stale financial confirmation')
             if monthly:
                 await conn.execute('UPDATE money_accounts SET monthly_atoms=? WHERE kind=? AND subject_id=?',(atoms,kind,subject_id))
+            elif period_only:
+                held=await (await conn.execute("SELECT free_atoms FROM money_reservations WHERE kind=? AND subject_id=? AND period_start=? AND state='held'",(kind,subject_id,balance['period_start']))).fetchall()
+                if debit and balance['free_atoms']<atoms:raise MoneyError('Insufficient balance')
+                if not debit and balance['free_atoms']+atoms+sum(r[0] for r in held)>MAX_ATOMS:raise MoneyError('Balance exceeds ledger capacity')
+                await conn.execute('UPDATE money_periods SET free_atoms=free_atoms+? WHERE kind=? AND subject_id=? AND starts=?',(-atoms if debit else atoms,kind,subject_id,balance['period_start']))
             else:
                 holds = await (await conn.execute("SELECT extra_atoms FROM money_reservations WHERE kind=? AND subject_id=? AND state='held'",(kind,subject_id))).fetchall()
-                if balance['extra_atoms']+atoms+sum(r[0] for r in holds)>MAX_ATOMS:
+                if debit and balance['extra_atoms']<atoms:raise MoneyError('Insufficient balance')
+                if not debit and balance['extra_atoms']+atoms+sum(r[0] for r in holds)>MAX_ATOMS:
                     raise MoneyError('Balance exceeds ledger capacity')
-                await conn.execute('UPDATE money_accounts SET extra_atoms=extra_atoms+? WHERE kind=? AND subject_id=?',(atoms,kind,subject_id))
+                await conn.execute('UPDATE money_accounts SET extra_atoms=extra_atoms+? WHERE kind=? AND subject_id=?',(-atoms if debit else atoms,kind,subject_id))
+            await conn.execute('UPDATE money_accounts SET quota_revision=quota_revision+1 WHERE kind=? AND subject_id=?',(kind,subject_id))
+            await conn.execute('INSERT INTO audit_log(actor_user_id,action,chat_id,target_id,details_json,created_at) VALUES(?,?,?,?,?,?)',
+                               (admin_id,'money-adjust',subject_id,operation_id,json.dumps({'kind':kind,'event':event,'atoms':atoms}),stamp(at)))

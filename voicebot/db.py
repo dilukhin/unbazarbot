@@ -15,6 +15,7 @@ from .ledger_store import LedgerStore
 from .money import MoneySettings
 from .financial_store import FinancialStore
 from .extended_store import ExtendedStore
+from .money_ui_store import MoneyUIStore
 
 
 def utcnow() -> str:
@@ -47,7 +48,7 @@ class AccessRequest:
     is_new: bool = False
 
 
-class Database(AccessStore, PaidStore, LedgerStore, FinancialStore, ExtendedStore):
+class Database(AccessStore, PaidStore, LedgerStore, FinancialStore, ExtendedStore, MoneyUIStore):
     def __init__(self, path: str | Path, money_settings: MoneySettings | None = None):
         self.path = Path(path)
         self.money_settings = money_settings or MoneySettings()
@@ -157,6 +158,7 @@ class Database(AccessStore, PaidStore, LedgerStore, FinancialStore, ExtendedStor
         await self.init_money_schema()
         await self.init_financial_schema()
         await self.init_extended_schema()
+        await self.init_money_ui_schema()
 
     async def upsert_config_admins(self, admin_user_ids: set[int]) -> None:
         now = utcnow()

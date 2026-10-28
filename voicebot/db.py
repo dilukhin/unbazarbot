@@ -11,6 +11,8 @@ import aiosqlite
 
 from .access_store import AccessStore
 from .paid_store import PaidStore
+from .ledger_store import LedgerStore
+from .money import MoneySettings
 
 
 def utcnow() -> str:
@@ -43,9 +45,10 @@ class AccessRequest:
     is_new: bool = False
 
 
-class Database(AccessStore, PaidStore):
-    def __init__(self, path: str | Path):
+class Database(AccessStore, PaidStore, LedgerStore):
+    def __init__(self, path: str | Path, money_settings: MoneySettings | None = None):
         self.path = Path(path)
+        self.money_settings = money_settings or MoneySettings()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn: aiosqlite.Connection | None = None
 
@@ -149,6 +152,7 @@ class Database(AccessStore, PaidStore):
         await self.db.commit()
         await self.init_access_schema()
         await self.init_paid_schema()
+        await self.init_money_schema()
 
     async def upsert_config_admins(self, admin_user_ids: set[int]) -> None:
         now = utcnow()

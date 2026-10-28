@@ -75,7 +75,8 @@ async def trial(config,database,env_file):
     health(config,database,env_file)
     with tempfile.TemporaryDirectory(prefix='unbazar_trial_') as tmp:
         copy=backup_database(database,Path(tmp)/'trial.sqlite3')
-        db=Database(copy)
+        from voicebot.config import load_config
+        db=Database(copy, load_config(config).money)
         try:
             await db.open()
         finally:

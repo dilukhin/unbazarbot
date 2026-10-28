@@ -288,7 +288,7 @@ class PriceCatalog:
                         self._etag = response.headers.get("ETag")
                 self.last_error = None
                 return True
-            except (httpx.HTTPError, OSError, TariffError, RuntimeError):
+            except (httpx.HTTPError, OSError, TariffError, RuntimeError, ImportError, ValueError):
                 self.last_error = "refresh-failed"
                 return False
 

@@ -116,6 +116,18 @@ class ContractTests(unittest.TestCase):
 
 
 class RefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_client_setup_failure_preserves_cache_and_next_refresh_recovers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = catalog(Path(tmp)/'prices.json')
+            before = service.snapshot.snapshot_id
+            with patch('voicebot.tariffs.httpx.AsyncClient', side_effect=ImportError('synthetic missing proxy dependency')):
+                self.assertFalse(await service.refresh())
+            self.assertEqual(service.snapshot.snapshot_id, before)
+            self.assertEqual(service.last_error, 'refresh-failed')
+            service.transport = httpx.MockTransport(lambda request: httpx.Response(200, content=json.dumps(document()).encode()))
+            self.assertTrue(await service.refresh())
+            self.assertIsNone(service.last_error)
+
     async def asyncSetUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.path=Path(self.tmp.name)/'runtime'/'prices.json'
 

@@ -77,6 +77,7 @@ class AccessStore:
                 VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET
                 title=excluded.title,username=excluded.username,updated_at=excluded.updated_at""",
                 (user_id, title[:200], username, stamp, stamp))
+            await self._money_account(conn, 'user', user_id, datetime.fromisoformat(stamp), 'private-interaction')
 
     async def private_user_allowed(self, user_id):
         subject = await self.access_subject("user", user_id)
@@ -163,6 +164,9 @@ class AccessStore:
                            max(1, jobs) if decision == "approve_once" else 0])
         params.append(target_id)
         await conn.execute(f"UPDATE {table} SET {assignments} WHERE {key}=?", params)
+        if kind == 'group' and decision == 'approve_forever':
+            await self._money_account(conn, kind, target_id, datetime.fromisoformat(stamp), 'persistent-approval')
+            await self._money_roll(conn, kind, target_id, datetime.fromisoformat(stamp))
         # Каждое изменение делает все старые уведомления этого адресата недействительными.
         await conn.execute("""UPDATE access_requests SET status='superseded',updated_at=?
             WHERE subject_type=? AND chat_id=? AND status='pending'""", (stamp, kind, target_id))

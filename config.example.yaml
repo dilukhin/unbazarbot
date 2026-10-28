@@ -60,6 +60,12 @@ formatter:
 
 # Только проверенный опубликованный канал agent-toolchain; URL фиксирован кодом.
 # Кеш: TARIFF_CACHE_PATH либо routerai-prices.json рядом с внешней DB_PATH.
+money:
+  # Точные строки базариков. Применяются при создании нового счёта;
+  # изменение существующей месячной квоты — отдельная операция администратора.
+  user_monthly_bazariki: "1000"
+  group_monthly_bazariki: "10000"
+
 tariffs:
   refresh_seconds: 21600
   max_age_seconds: 172800

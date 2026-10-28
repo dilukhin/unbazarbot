@@ -18,6 +18,7 @@ from voicebot.stt_routerai import RouterAITranscriber
 from voicebot.runtime import InstanceLock
 from voicebot.tariffs import PriceCatalog
 from voicebot.formatter import RouterAIFormatter
+from voicebot.money_middleware import ExplicitMoneyInteraction
 
 
 async def main() -> None:
@@ -40,7 +41,7 @@ async def main() -> None:
     if tariff_path.is_relative_to(Path(__file__).resolve().parent):
         raise RuntimeError("TARIFF_CACHE_PATH must be outside application code/releases; use an external runtime directory")
     with InstanceLock(os.getenv('LOCK_PATH', db_path + '.lock')):
-        db = Database(db_path)
+        db = Database(db_path, config.money)
         await db.open()
         await db.recover_paid_calls()
         await db.upsert_config_admins(config.admin_user_ids)
@@ -53,6 +54,8 @@ async def main() -> None:
 
         bot = Bot(token=token, default=DefaultBotProperties(parse_mode=None))
         dp = Dispatcher()
+        dp.message.outer_middleware(ExplicitMoneyInteraction())
+        dp.callback_query.outer_middleware(ExplicitMoneyInteraction())
         dp.include_router(access_router)
         dp.include_router(router)
 

@@ -1,3 +1,4 @@
+from tests.tariff_fixtures import catalog as synthetic_catalog
 import asyncio
 from dataclasses import replace
 from pathlib import Path
@@ -69,6 +70,7 @@ class FormatterPipelineTests(DatabaseCase):
         await super().asyncSetUp()
         cfg=replace(load_config('config.example.yaml'),formatter=FormatterConfig(True,'p',{'p':'provider/model'}))
         self.ctx=AppContext(cfg,self.db,AsyncMock(),AsyncMock())
+        self.ctx.prices=synthetic_catalog(Path(self.tmp.name)/"prices.json", [m.provider_model for m in cfg.models.values()])
         self.ctx.transcriber.transcribe.return_value=SimpleNamespace(text='привет мир',cost=0.1,duration_seconds=3)
         self.ctx.formatter.format.return_value=FormatResult('Привет, мир!',0.2,True,True)
         self.message=SimpleNamespace(chat=SimpleNamespace(id=1,type='private'),from_user=SimpleNamespace(id=1),message_id=1,
@@ -82,29 +84,18 @@ class FormatterPipelineTests(DatabaseCase):
         with patch('voicebot.handlers.download_media_to_temp',side_effect=self.download):
             await transcribe_message_media(self.message,self.message,self.ctx,AsyncMock(),self.ctx.config.default_model,raw=raw)
 
-    async def test_cache_keeps_raw_and_formatted_and_counts_both_costs(self):
-        await self.transcribe();await self.transcribe()
-        cached=await self.db.cached_transcript('f',self.ctx.config.default_model)
-        self.assertEqual(cached['transcript'],'привет мир')
-        self.assertEqual(cached['formatted_transcript'],'Привет, мир!')
-        self.ctx.formatter.format.assert_awaited_once()
-        self.ctx.transcriber.transcribe.assert_awaited_once()
-        stats=await self.db.usage_today()
-        self.assertAlmostEqual(stats[0]['known_cost'],0.3)
-        self.assertEqual(stats[0]['unknown_cost'],0)
-        self.message.answer.reset_mock();await self.transcribe(raw=True)
-        self.assertIn('привет мир',str(self.message.answer.call_args_list))
-        self.assertNotIn('Привет, мир!',str(self.message.answer.call_args_list))
-
-    async def test_formatter_failure_does_not_lose_successful_stt(self):
-        self.ctx.formatter.format.side_effect=RuntimeError('SECRET')
+    async def test_unreserved_formatter_is_skipped_and_raw_cache_survives(self):
         await self.transcribe();await self.transcribe()
         cached=await self.db.cached_transcript('f',self.ctx.config.default_model)
         self.assertEqual(cached['transcript'],'привет мир')
         self.assertIsNone(cached['formatted_transcript'])
-        self.assertNotIn('SECRET',str(self.message.answer.call_args_list))
+        self.ctx.formatter.format.assert_not_awaited()
         self.ctx.transcriber.transcribe.assert_awaited_once()
-        self.assertEqual((await self.db.usage_today())[0]['unknown_cost'],1)
+        stats=await self.db.usage_today()
+        self.assertAlmostEqual(stats[0]['known_cost'],0.1)
+        self.assertEqual(stats[0]['unknown_cost'],0)
+        self.message.answer.reset_mock();await self.transcribe(raw=True)
+        self.assertIn('привет мир',str(self.message.answer.call_args_list))
 
     async def test_disabled_or_changed_formatter_uses_raw_cache_without_payment(self):
         await self.transcribe()
@@ -112,22 +103,20 @@ class FormatterPipelineTests(DatabaseCase):
         self.ctx.config=replace(self.ctx.config,formatter=replace(self.ctx.config.formatter,default_model='different'))
         await self.transcribe()
         self.assertIn('привет мир',str(self.message.answer.call_args_list))
-        self.ctx.formatter.format.assert_awaited_once()
+        self.ctx.formatter.format.assert_not_awaited()
 
-    async def test_cancellation_preserves_raw_and_never_retries_formatter(self):
-        started=asyncio.Event()
-        async def format(text):
-            started.set();await asyncio.Event().wait()
-        self.ctx.formatter.format.side_effect=format
-        task=asyncio.create_task(self.transcribe())
-        await asyncio.wait_for(started.wait(),5)
+    async def test_interruption_after_raw_save_preserves_stt_without_formatter_payment(self):
+        original=self.db.complete_paid_job
+        async def save(*args,**kwargs):
+            await original(*args,**kwargs)
+            raise asyncio.CancelledError()
+        with patch.object(self.db,'complete_paid_job',side_effect=save):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.transcribe()
         self.assertIsNotNone(await self.db.cached_transcript('f',self.ctx.config.default_model))
-        task.cancel()
-        with self.assertRaises(asyncio.CancelledError):
-            await task
         await self.db.recover_paid_calls()
         await self.transcribe()
-        self.ctx.formatter.format.assert_awaited_once()
+        self.ctx.formatter.format.assert_not_awaited()
         self.ctx.transcriber.transcribe.assert_awaited_once()
 
     async def test_revoke_after_stt_prevents_extra_paid_formatting(self):

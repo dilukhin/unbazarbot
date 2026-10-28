@@ -1,3 +1,4 @@
+from tests.tariff_fixtures import catalog as synthetic_catalog
 import asyncio
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -147,8 +148,64 @@ class PipelineTests(DatabaseCase):
         await super().asyncSetUp()
         self.config=load_config('config.example.yaml')
         self.ctx=AppContext(self.config,self.db,AsyncMock())
+        self.ctx.prices=synthetic_catalog(Path(self.tmp.name)/"prices.json", [m.provider_model for m in self.config.models.values()])
         self.bot=AsyncMock()
         self.ctx.transcriber.transcribe.return_value=SimpleNamespace(text='Текст.',cost=0,duration_seconds=3)
+
+    async def test_missing_tariffs_block_before_download_and_provider(self):
+        self.ctx.prices=None
+        message=self.message()
+        with patch('voicebot.handlers.download_media_to_temp',new_callable=AsyncMock) as download:
+            await transcribe_message_media(message,message,self.ctx,self.bot,self.config.default_model)
+        download.assert_not_awaited();self.ctx.transcriber.transcribe.assert_not_awaited()
+        self.assertIn('проверенной оценки',str(message.answer.call_args_list))
+
+    async def test_stale_tariffs_leave_cached_result_free_but_block_new_file(self):
+        from datetime import timedelta
+        from tests.tariff_fixtures import NOW
+        message=self.message()
+        with patch('voicebot.handlers.download_media_to_temp',side_effect=self.download):
+            await transcribe_message_media(message,message,self.ctx,self.bot,self.config.default_model)
+        self.ctx.transcriber.transcribe.reset_mock()
+        self.ctx.prices.clock=lambda:NOW+timedelta(days=3)
+        with patch('voicebot.handlers.download_media_to_temp',new_callable=AsyncMock) as download:
+            await transcribe_message_media(message,message,self.ctx,self.bot,self.config.default_model)
+            fresh=self.message(key='fresh')
+            await transcribe_message_media(fresh,fresh,self.ctx,self.bot,self.config.default_model)
+        download.assert_not_awaited();self.ctx.transcriber.transcribe.assert_not_awaited()
+        self.assertIn('из кеша',str(message.answer.call_args_list))
+
+    async def test_expiry_during_download_blocks_before_reservation(self):
+        from datetime import timedelta
+        from tests.tariff_fixtures import NOW
+        async def download(*args):
+            result=await self.download(*args)
+            self.ctx.prices.clock=lambda:NOW+timedelta(days=3)
+            return result
+        message=self.message()
+        with patch('voicebot.handlers.download_media_to_temp',side_effect=download), patch.object(self.db,'reserve_paid_call',wraps=self.db.reserve_paid_call) as reserve:
+            await transcribe_message_media(message,message,self.ctx,self.bot,self.config.default_model)
+        reserve.assert_not_awaited();self.ctx.transcriber.transcribe.assert_not_awaited()
+
+    async def test_expiry_during_reservation_blocks_provider(self):
+        from datetime import timedelta
+        from tests.tariff_fixtures import NOW
+        original=self.db.reserve_paid_call
+        async def reserve(*args,**kwargs):
+            reason=await original(*args,**kwargs)
+            self.ctx.prices.clock=lambda:NOW+timedelta(days=3)
+            return reason
+        message=self.message()
+        with patch('voicebot.handlers.download_media_to_temp',side_effect=self.download), patch.object(self.db,'reserve_paid_call',side_effect=reserve):
+            await transcribe_message_media(message,message,self.ctx,self.bot,self.config.default_model)
+        self.ctx.transcriber.transcribe.assert_not_awaited()
+
+    async def test_auto_without_safe_price_is_silent(self):
+        self.ctx.prices=None;message=self.message(chat=-100)
+        with patch('voicebot.handlers.download_media_to_temp',new_callable=AsyncMock) as download:
+            await transcribe_message_media(message,message,self.ctx,self.bot,self.config.default_model,require_auto=True)
+        download.assert_not_awaited();message.answer.assert_not_awaited()
+        self.ctx.transcriber.transcribe.assert_not_awaited()
 
     def message(self, user=1, chat=1, key='unique'):
         voice=SimpleNamespace(file_id=key,file_unique_id=key,duration=3,file_size=100,mime_type='audio/ogg')

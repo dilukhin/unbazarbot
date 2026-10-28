@@ -14,7 +14,9 @@ from pathlib import Path
 
 
 class AudioError(ValueError):
-    pass
+    def __init__(self,message,code='invalid-audio'):
+        super().__init__(message)
+        self.code=code
 
 
 @dataclass
@@ -65,11 +67,17 @@ async def _run(binary, args, max_bytes):
         return bytes(result)
     readers=[asyncio.create_task(bounded(proc.stdout,1024*1024)),asyncio.create_task(bounded(proc.stderr,65536))]
     async def collect():
-        output,_=await asyncio.gather(*readers)
-        return output,await proc.wait()
+        output,errors=await asyncio.gather(*readers)
+        return output,errors,await proc.wait()
     try:
-        output,code=await asyncio.wait_for(collect(),timeout=45)
-        if code!=0:raise AudioError('Аудиофайл повреждён, не поддерживается или превышает предел проверки.')
+        output,errors,code=await asyncio.wait_for(collect(),timeout=45)
+        if code!=0:
+            reason='codec-or-resource-limit'
+            for needles,label in (((b'pthread_create',b'Resource temporarily unavailable',b'Error creating thread'),'thread-limit'),
+                                  ((b'Cannot allocate memory',b'failed to map',b'Out of memory'),'memory-limit'),
+                                  ((b'Unrecognized option',b'Option not found'),'unsupported-option')):
+                if any(token in errors for token in needles):reason=label;break
+            raise AudioError('Аудиофайл повреждён, не поддерживается или превышает предел проверки.',code=reason)
         return output
     except BaseException:
         with contextlib.suppress(ProcessLookupError):os.killpg(proc.pid,signal.SIGKILL)

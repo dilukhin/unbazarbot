@@ -39,7 +39,10 @@ class RealAudioTests(unittest.IsolatedAsyncioTestCase):
             source=Path(tmp)/'safe.wav';wav(source)
             for fmt in ('ogg','mp3','wav','flac'):
                 with self.subTest(fmt=fmt):
-                    prepared=await prepare_audio(source,max_seconds=2,max_bytes=1024*1024,audio_format=fmt)
+                    try:
+                        prepared=await prepare_audio(source,max_seconds=2,max_bytes=1024*1024,audio_format=fmt)
+                    except AudioError as exc:
+                        self.fail('Synthetic audio resource check: '+exc.code)
                     self.assertLess(prepared.duration,Decimal('1.1'))
                     self.assertGreater(prepared.path.stat().st_size,0)
                     parent=prepared.path.parent

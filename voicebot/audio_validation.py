@@ -54,7 +54,7 @@ async def _run(binary, args, max_bytes):
     executable=shutil.which(binary)
     if os.name!='posix' or not limiter or not executable:
         raise AudioError('Безопасная проверка аудио сейчас недоступна.')
-    proc=await asyncio.create_subprocess_exec(limiter,'--as=536870912','--cpu=20',
+    proc=await asyncio.create_subprocess_exec(limiter,'--as=536870912','--stack=2097152','--cpu=20',
                     '--fsize='+str(max_bytes),'--nofile=64','--nproc=256','--',executable,*args,
                     stdin=asyncio.subprocess.DEVNULL,stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,start_new_session=True,

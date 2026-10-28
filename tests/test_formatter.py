@@ -3,6 +3,8 @@ import asyncio
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from decimal import Decimal
+from voicebot.money import MoneySettings
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -32,7 +34,7 @@ class FormatterTests(unittest.IsolatedAsyncioTestCase):
     async def test_success_adds_punctuation_without_changing_words(self):
         result,requests=await self.call({'choices':[{'message':{'content':'Привет, мир!\n\nЭто тест.'}}],'usage':{'cost':0.1}})
         self.assertTrue(result.accepted)
-        self.assertEqual(result.cost,0.1)
+        self.assertEqual(result.cost,Decimal('0.1'))
         self.assertEqual(len(requests),1)
         self.assertTrue(requests[0].url.path.endswith('/chat/completions'))
 
@@ -41,7 +43,7 @@ class FormatterTests(unittest.IsolatedAsyncioTestCase):
             result,_=await self.call({'text':text,'usage':{'cost':0.2}})
             self.assertFalse(result.accepted)
             self.assertEqual(result.text,'привет мир это тест')
-            self.assertEqual(result.cost,0.2)
+            self.assertEqual(result.cost,Decimal('0.2'))
 
     async def test_disabled_and_large_input_do_not_call_provider(self):
         for cfg in (self.config(enabled=False),self.config(max_input_chars=2)):
@@ -69,9 +71,10 @@ class FormatterPipelineTests(DatabaseCase):
     async def asyncSetUp(self):
         await super().asyncSetUp()
         cfg=replace(load_config('config.example.yaml'),formatter=FormatterConfig(True,'p',{'p':'provider/model'}))
+        self.db.money_settings=MoneySettings(global_daily_rub='100')
         self.ctx=AppContext(cfg,self.db,AsyncMock(),AsyncMock())
         self.ctx.prices=synthetic_catalog(Path(self.tmp.name)/"prices.json", [m.provider_model for m in cfg.models.values()])
-        self.ctx.transcriber.transcribe.return_value=SimpleNamespace(text='привет мир',cost=0.1,duration_seconds=3)
+        self.ctx.transcriber.transcribe.return_value=SimpleNamespace(text='привет мир',cost=Decimal('0.1'),duration_seconds=3)
         self.ctx.formatter.format.return_value=FormatResult('Привет, мир!',0.2,True,True)
         self.message=SimpleNamespace(chat=SimpleNamespace(id=1,type='private'),from_user=SimpleNamespace(id=1),message_id=1,
             voice=SimpleNamespace(file_id='f',file_unique_id='f',duration=3,file_size=10,mime_type='audio/ogg'),
@@ -92,7 +95,7 @@ class FormatterPipelineTests(DatabaseCase):
         self.ctx.formatter.format.assert_not_awaited()
         self.ctx.transcriber.transcribe.assert_awaited_once()
         stats=await self.db.usage_today()
-        self.assertAlmostEqual(stats[0]['known_cost'],0.1)
+        self.assertEqual(stats[0]['known_cost_rub'],Decimal('0.1'))
         self.assertEqual(stats[0]['unknown_cost'],0)
         self.message.answer.reset_mock();await self.transcribe(raw=True)
         self.assertIn('привет мир',str(self.message.answer.call_args_list))
@@ -106,11 +109,11 @@ class FormatterPipelineTests(DatabaseCase):
         self.ctx.formatter.format.assert_not_awaited()
 
     async def test_interruption_after_raw_save_preserves_stt_without_formatter_payment(self):
-        original=self.db.complete_paid_job
+        original=self.db.record_financial_response
         async def save(*args,**kwargs):
             await original(*args,**kwargs)
             raise asyncio.CancelledError()
-        with patch.object(self.db,'complete_paid_job',side_effect=save):
+        with patch.object(self.db,'record_financial_response',side_effect=save):
             with self.assertRaises(asyncio.CancelledError):
                 await self.transcribe()
         self.assertIsNotNone(await self.db.cached_transcript('f',self.ctx.config.default_model))
@@ -122,7 +125,7 @@ class FormatterPipelineTests(DatabaseCase):
     async def test_revoke_after_stt_prevents_extra_paid_formatting(self):
         async def transcribe(*args,**kwargs):
             await self.db.upsert_config_admins(set())
-            return SimpleNamespace(text='привет мир',cost=0.1,duration_seconds=3)
+            return SimpleNamespace(text='привет мир',cost=Decimal('0.1'),duration_seconds=3)
         self.ctx.transcriber.transcribe.side_effect=transcribe
         await self.transcribe()
         self.ctx.formatter.format.assert_not_awaited()

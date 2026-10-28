@@ -44,6 +44,7 @@ async def main() -> None:
         db = Database(db_path, config.money)
         await db.open()
         await db.recover_paid_calls()
+        await db.recover_financial_calls()
         await db.upsert_config_admins(config.admin_user_ids)
 
         transcriber = RouterAITranscriber(routerai_key, base_url=config.routerai_base_url)

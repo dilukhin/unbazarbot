@@ -13,6 +13,7 @@ from .access_store import AccessStore
 from .paid_store import PaidStore
 from .ledger_store import LedgerStore
 from .money import MoneySettings
+from .financial_store import FinancialStore
 
 
 def utcnow() -> str:
@@ -45,7 +46,7 @@ class AccessRequest:
     is_new: bool = False
 
 
-class Database(AccessStore, PaidStore, LedgerStore):
+class Database(AccessStore, PaidStore, LedgerStore, FinancialStore):
     def __init__(self, path: str | Path, money_settings: MoneySettings | None = None):
         self.path = Path(path)
         self.money_settings = money_settings or MoneySettings()
@@ -153,6 +154,7 @@ class Database(AccessStore, PaidStore, LedgerStore):
         await self.init_access_schema()
         await self.init_paid_schema()
         await self.init_money_schema()
+        await self.init_financial_schema()
 
     async def upsert_config_admins(self, admin_user_ids: set[int]) -> None:
         now = utcnow()
@@ -315,14 +317,15 @@ class Database(AccessStore, PaidStore, LedgerStore):
         row = await self.access_subject("group", chat_id)
         return bool(row and await self.change_access("group", chat_id, "revoke", admin_user_id, row["revision"]))
 
-    async def cached_transcript(self, file_unique_id: str, model_alias: str) -> dict[str, Any] | None:
+    async def cached_transcript(self, file_unique_id: str, model_alias: str, provider_model: str | None = None) -> dict[str, Any] | None:
         row = await (await self.db.execute(
             """
             SELECT * FROM transcription_jobs
-            WHERE file_unique_id=? AND model_alias=? AND status='done' AND transcript IS NOT NULL
+            WHERE file_unique_id=? AND ((? IS NULL AND model_alias=?) OR (? IS NOT NULL AND provider_model=?))
+              AND status='done' AND transcript IS NOT NULL
             ORDER BY created_at DESC LIMIT 1
             """,
-            (file_unique_id, model_alias),
+            (file_unique_id,provider_model,model_alias,provider_model,provider_model),
         )).fetchone()
         if not row:
             return None

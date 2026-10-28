@@ -2,10 +2,12 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 import re
+from decimal import Decimal
 
 import httpx
 
 from .stt_routerai import RouterAITranscriber
+from .provider_costs import decode_response, usage_cost, generation_id
 
 
 PROMPT = ('Расставь знаки препинания, исправь регистр букв и раздели текст на предложения '
@@ -33,10 +35,11 @@ class FormatterConfig:
 @dataclass(frozen=True)
 class FormatResult:
     text: str
-    cost: float | None = None
+    cost: Decimal | None = None
     accepted: bool = False
     attempted: bool = False
     error: str | None = None
+    generation_id: str | None = None
 
 
 def same_words(raw,formatted):
@@ -53,6 +56,7 @@ class RouterAIFormatter:
         if not cfg.enabled or not text.strip() or len(text)>cfg.max_input_chars:
             return FormatResult(text,error='InputLimit' if len(text)>cfg.max_input_chars else None)
         cost=None
+        identity=None
         try:
             async with httpx.AsyncClient(timeout=cfg.timeout_seconds) as client:
                 response=await client.post(self.base_url+'/chat/completions',
@@ -62,17 +66,17 @@ class RouterAIFormatter:
                                     {'role':'user','content':json.dumps({'transcript':text},ensure_ascii=False)}],
                         'temperature':0,'max_tokens':cfg.max_output_tokens})
             response.raise_for_status()
-            data=response.json()
+            identity=generation_id(response.headers.get('X-Generation-Id'))
+            data=decode_response(response)
             if not isinstance(data,dict):
                 raise ValueError('Invalid response')
             usage=data.get('usage') if isinstance(data.get('usage'),dict) else {}
-            cost=next((RouterAITranscriber._as_float(value) for value in
-                       (usage.get('cost'),usage.get('total_cost'),data.get('cost'))
-                       if RouterAITranscriber._as_float(value) is not None),None)
+            cost=usage_cost(data)
             result=RouterAITranscriber._extract_text(data).strip()
             if not result or not same_words(text,result):
-                return FormatResult(text,cost,attempted=True,error='WordsChanged')
-            return FormatResult(result,cost,accepted=True,attempted=True)
+                return FormatResult(text,cost,attempted=True,error='WordsChanged',generation_id=identity)
+            return FormatResult(result,cost,accepted=True,attempted=True,
+                                generation_id=identity)
         except Exception as exc:
             # Не сохранять ответ сервиса, ключи или исходный текст в ошибке.
-            return FormatResult(text,cost,attempted=True,error=type(exc).__name__)
+            return FormatResult(text,cost,attempted=True,error=type(exc).__name__,generation_id=identity)

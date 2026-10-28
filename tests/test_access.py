@@ -83,6 +83,8 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         self.session = RecordingSession()
         self.bot = Bot('123456:TEST', session=self.session)
         self.ctx = AppContext(config(), self.db, AsyncMock())
+        from voicebot.money import MoneySettings
+        self.db.money_settings=MoneySettings(global_daily_rub='100')
         self.ctx.prices = synthetic_catalog(Path(self.tmp.name) / "prices.json", [m.provider_model for m in self.ctx.config.models.values()])
         self.storage = MemoryStorage()
         self.state = FSMContext(self.storage, StorageKey(bot_id=123456, chat_id=2, user_id=2))

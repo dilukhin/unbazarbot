@@ -8,6 +8,7 @@ import yaml
 
 from .paid_store import BudgetLimits
 from .formatter import FormatterConfig
+from .tariffs import TariffSettings
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class AppConfig:
     models: dict[str, ModelConfig]
     budget: BudgetLimits = field(default_factory=BudgetLimits)
     formatter: FormatterConfig = field(default_factory=FormatterConfig)
+    tariffs: TariffSettings = field(default_factory=TariffSettings)
 
     def model(self, alias: str | None = None) -> ModelConfig:
         selected = alias or self.default_model
@@ -154,4 +156,5 @@ def load_config(path: str | Path) -> AppConfig:
         models=models,
         budget=budget,
         formatter=formatter,
+        tariffs=TariffSettings(**(raw.get("tariffs") or {})),
     )

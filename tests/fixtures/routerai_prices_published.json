@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "owner": "agent-toolchain:routerai-prices:v1",
+  "publisher": "dilukhin/agent-toolchain",
+  "_managed_notice": "Managed RouterAI prices; do not edit. See docs/routerai_prices_contract_ru.md.",
+  "state": "published",
+  "source_url": "https://routerai.ru/api/v1/models",
+  "source_checked_at": "2026-10-28T12:00:00Z",
+  "snapshot_id": "sha256:bcb46eb3a3e4aef8f3b489d9a6042371111af09b795a577ac974014b35a80820",
+  "content": {
+    "currency": "RUB",
+    "models": {
+      "synthetic/asr": {
+        "id": "synthetic/asr",
+        "status": "available",
+        "reason": null,
+        "architecture": {
+          "input_modalities": [
+            "audio"
+          ],
+          "output_modalities": [
+            "text"
+          ]
+        },
+        "catalog_pricing": {
+          "seconds": "0.00012345678901234567890123456789"
+        },
+        "catalog_pricing_units": {
+          "seconds": "second"
+        },
+        "api": "audio/transcriptions",
+        "endpoints": [
+          {
+            "provider": "test-provider",
+            "pricing": {
+              "seconds": "0.00012345678901234567890123456789"
+            },
+            "pricing_units": {
+              "seconds": "second"
+            },
+            "supported_apis": [
+              "audio/transcriptions"
+            ],
+            "variable_pricing": false,
+            "source_url": "https://routerai.ru/api/v1/models/synthetic/asr/endpoints"
+          }
+        ],
+        "price_ceilings": {
+          "seconds": {
+            "unit": "second",
+            "rub": "0.01"
+          }
+        }
+      }
+    }
+  },
+  "published_at": "2026-10-28T12:01:00Z",
+  "content_changed_at": "2026-10-28T12:01:00Z",
+  "validation": {
+    "status": "success",
+    "workflow": "validate.yml",
+    "candidate_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "run_id": 7
+  }
+}

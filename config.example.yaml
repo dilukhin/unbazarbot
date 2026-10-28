@@ -56,3 +56,11 @@ formatter:
   models:
     punctuation:
       provider_model: openai/gpt-4o
+
+
+# Только проверенный опубликованный канал agent-toolchain; URL фиксирован кодом.
+# Кеш: TARIFF_CACHE_PATH либо routerai-prices.json рядом с внешней DB_PATH.
+tariffs:
+  refresh_seconds: 21600
+  max_age_seconds: 172800
+  timeout_seconds: 15

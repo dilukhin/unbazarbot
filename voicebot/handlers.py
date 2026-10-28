@@ -26,7 +26,8 @@ from .config import AppConfig
 from .db import Database, AccessRequest
 from .media import MediaRef, download_media_to_temp, extract_media, guess_audio_format
 from .stt_routerai import RouterAITranscriber
-from .formatter import RouterAIFormatter, FormatResult
+from .formatter import RouterAIFormatter
+from .tariffs import PriceCatalog, Estimate
 from .diagnostics import about_text, system_text
 from .textfmt import chunks, user_label
 
@@ -37,6 +38,7 @@ class AppContext:
     db: Database
     transcriber: RouterAITranscriber
     formatter: RouterAIFormatter | None = None
+    prices: PriceCatalog | None = None
 
 
 router = Router()
@@ -188,6 +190,16 @@ async def transcribe_message_media(
             first = False
         return
 
+    def quote():
+        return (ctx.prices.estimate_audio(model_cfg.provider_model, ctx.config.max_audio_seconds + 1)
+                if ctx.prices else Estimate("unavailable", "catalog-service-missing"))
+
+    estimate = quote()
+    if not estimate.available:
+        if not require_auto:
+            await message.answer("Новый платный запрос недоступен: нет безопасной проверенной оценки стоимости (" + estimate.status + "). Кеш остаётся доступен.")
+        return
+
     await message.answer(f"Распознаю аудио моделью {model_alias}…", reply_to_message_id=target_message.message_id)
 
     job_id = await ctx.db.create_job(
@@ -208,6 +220,14 @@ async def transcribe_message_media(
         audio_format = guess_audio_format(media, telegram_file_path, model_cfg.audio_format)
         if tmp_path.stat().st_size > ctx.config.max_file_mb * 1024 * 1024:
             raise ValueError('Скачанный файл превышает лимит размера')
+        # Recheck the current snapshot after the asynchronous download. A catalog
+        # that expired or changed while downloading cannot authorize inference.
+        estimate = quote()
+        if not estimate.available:
+            await ctx.db.fail_job(job_id, "TariffUnavailable")
+            if not require_auto:
+                await message.answer("Проверенная стоимость стала недоступна; платный запрос остановлен.")
+            return
         reason = await ctx.db.reserve_paid_call(
             job_id=job_id, chat_id=message.chat.id,
             user_id=message.from_user.id if message.from_user else None,
@@ -221,6 +241,13 @@ async def transcribe_message_media(
             await ctx.db.fail_job(job_id, reason)
             await message.answer(reason)
             return
+        estimate = quote()
+        if not estimate.available:
+            await ctx.db.fail_job(job_id, "TariffUnavailable")
+            await ctx.db.finish_paid_call(job_id, "interrupted")
+            if not require_auto:
+                await message.answer("Проверенная стоимость стала недоступна; платный запрос остановлен.")
+            return
         paid_started = True
         result = await ctx.transcriber.transcribe(
             tmp_path,
@@ -230,30 +257,17 @@ async def transcribe_message_media(
             temperature=ctx.config.temperature,
         )
         output_text = result.text
-        format_result = None
-        if not raw and ctx.config.formatter.enabled and ctx.formatter:
-            await ctx.db.save_raw_for_formatting(job_id,result.text,result.cost,result.duration_seconds,ctx.config.formatter.signature)
-            completed = True  # Исходный результат уже устойчиво сохранён.
-            try:
-                if await ctx.db.formatting_access_allowed(job_id,ctx.config.allow_private_transcription_for_admins):
-                    format_result = await ctx.formatter.format(result.text)
-                else:
-                    format_result = FormatResult(result.text,error='AccessChanged')
-            except Exception as exc:
-                format_result = FormatResult(result.text,attempted=True,error=type(exc).__name__)
-            await ctx.db.finish_formatting(job_id,format_result)
-            output_text = format_result.text
-        else:
-            await ctx.db.complete_paid_job(job_id, result.text, result.cost, result.duration_seconds)
-            completed = True
+        # Additional paid formatting requires its own atomic monetary reserve (#20).
+        # Until then persist and return STT directly, including when legacy config
+        # still enables formatter. Existing formatted cache remains free to read.
+        await ctx.db.complete_paid_job(job_id, result.text, result.cost, result.duration_seconds)
+        completed = True
 
         meta = f"Расшифровка · модель: {model_alias}"
         if result.duration_seconds is not None:
             meta += f" · {result.duration_seconds:.1f} сек"
         if result.cost is not None:
             meta += f" · стоимость распознавания: {result.cost:g}"
-        if format_result and format_result.cost is not None:
-            meta += f" · стоимость оформления: {format_result.cost:g}"
         meta += "\n\n"
 
         first = True
@@ -261,6 +275,9 @@ async def transcribe_message_media(
             await message.answer((meta if first else "") + part, reply_to_message_id=target_message.message_id)
             first = False
     except asyncio.CancelledError:
+        if paid_started and not completed:
+            # Commit may have succeeded immediately before cancellation was delivered.
+            completed = bool(await asyncio.shield(ctx.db.cached_transcript(media.file_unique_id, model_alias)))
         if paid_started:
             await asyncio.shield(ctx.db.finish_paid_call(job_id, 'interrupted'))
         if paid_started and not completed:
@@ -346,6 +363,7 @@ async def cmd_stats(message: Message, ctx: AppContext) -> None:
              f'Сообщённая провайдером стоимость: {known:g}; без сведений об оплате: {unknown}.',
              f'Лимиты минут: чат {limits.daily_minutes_chat}, человек {limits.daily_minutes_user}.',
              f'Запросов в минуту: чат {limits.requests_per_minute_chat}, человек {limits.requests_per_minute_user}.']
+    lines.append(ctx.prices.summary() if ctx.prices else "Тарифы: unavailable; денежный каталог не подключён.")
     for row in rows:
         lines.append(f"Чат {row['chat_id']}, модель {row['model_alias']}: {row['calls']} попыток, {row['seconds']/60:g} мин.")
     for part in chunks('\n'.join(lines)):
@@ -401,7 +419,12 @@ async def cmd_model(message: Message, command: CommandObject, ctx: AppContext, b
         current = ctx.config.default_model
     lines = [f"Текущая модель: {current}", "", "Доступные модели:"]
     for alias, model in ctx.config.models.items():
-        lines.append(f"- {alias}: {model.provider_model} — {model.description}")
+        estimate = (ctx.prices.estimate_audio(model.provider_model, ctx.config.max_audio_seconds + 1)
+                    if ctx.prices else Estimate("unavailable"))
+        tariff = (f"предварительно до {estimate.max_rub} ₽ / {estimate.bazariki} Б за предел {ctx.config.max_audio_seconds + 1} с"
+                  if estimate.available else f"цена/ограничение недоступны: {estimate.status}")
+        details = ctx.prices.model_summary(model.provider_model) if ctx.prices else "каталог недоступен"
+        lines.append(f"- {alias}: {model.provider_model} — {model.description}; {tariff}; {details}")
     await message.answer("\n".join(lines))
 
 

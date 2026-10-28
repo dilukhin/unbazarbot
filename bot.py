@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 from pathlib import Path
@@ -15,6 +16,7 @@ from voicebot.db import Database
 from voicebot.handlers import AppContext, router
 from voicebot.stt_routerai import RouterAITranscriber
 from voicebot.runtime import InstanceLock
+from voicebot.tariffs import PriceCatalog
 from voicebot.formatter import RouterAIFormatter
 
 
@@ -34,6 +36,9 @@ async def main() -> None:
         raise RuntimeError(f"Config file not found: {config_path}")
 
     config = load_config(config_path)
+    tariff_path = Path(os.getenv("TARIFF_CACHE_PATH", str(Path(db_path).resolve().parent / "routerai-prices.json"))).resolve()
+    if tariff_path.is_relative_to(Path(__file__).resolve().parent):
+        raise RuntimeError("TARIFF_CACHE_PATH must be outside application code/releases; use an external runtime directory")
     with InstanceLock(os.getenv('LOCK_PATH', db_path + '.lock')):
         db = Database(db_path)
         await db.open()
@@ -42,7 +47,9 @@ async def main() -> None:
 
         transcriber = RouterAITranscriber(routerai_key, base_url=config.routerai_base_url)
         formatter = RouterAIFormatter(routerai_key,config.formatter,config.routerai_base_url) if config.formatter.enabled else None
-        ctx = AppContext(config=config, db=db, transcriber=transcriber,formatter=formatter)
+        prices = PriceCatalog(tariff_path, config.tariffs)
+        prices.load()
+        ctx = AppContext(config=config, db=db, transcriber=transcriber, formatter=formatter, prices=prices)
 
         bot = Bot(token=token, default=DefaultBotProperties(parse_mode=None))
         dp = Dispatcher()
@@ -50,11 +57,15 @@ async def main() -> None:
         dp.include_router(router)
 
         logging.info("Starting @%s", config.bot_username or "unknown")
+        prices_task = asyncio.create_task(prices.run(), name="published-tariffs-refresh")
         try:
             # Сохранить сообщения, накопленные во время обновления.
             await bot.delete_webhook(drop_pending_updates=False)
             await dp.start_polling(bot, ctx=ctx)
         finally:
+            prices_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await prices_task
             await db.close()
             await bot.session.close()
 

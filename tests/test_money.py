@@ -169,6 +169,18 @@ class LedgerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class InteractionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_other_bot_and_unrecognised_group_commands_do_not_anchor(self):
+        db=SimpleNamespace(touch_money_user=AsyncMock())
+        data={'ctx':SimpleNamespace(db=db,config=SimpleNamespace(bot_username='unbazarbot'))}
+        middleware=ExplicitMoneyInteraction();handler=AsyncMock()
+        base=dict(message_id=1,date=datetime.now(timezone.utc),chat=Chat(id=-101,type='group'),
+                  from_user=User(id=101,is_bot=False,first_name='Synthetic'))
+        for text in ('/help@other_bot','/unknown'):
+            await middleware(handler,Message(**base,text=text),data)
+        db.touch_money_user.assert_not_awaited()
+        await middleware(handler,Message(**base,text='/tr@unbazarbot'),data)
+        db.touch_money_user.assert_awaited_once_with(101)
+
     async def test_passive_group_voice_does_not_anchor_but_commands_and_private_do(self):
         db=SimpleNamespace(touch_money_user=AsyncMock())
         data={'ctx':SimpleNamespace(db=db)}

@@ -24,10 +24,10 @@ class ExtendedStore:
         row=await (await (conn or self.db).execute('SELECT trf_allowed FROM private_users WHERE user_id=?',(user_id,))).fetchone()
         return bool(row and row[0])
 
-    async def set_extended_audio(self, user_id, allowed, admin_id, expected_revision=None):
+    async def set_extended_audio(self, user_id, allowed, admin_id, expected_revision=None, conn=None):
         if type(user_id) is not int or user_id<=0 or type(allowed) is not bool:
             raise ValueError('Invalid extended permission')
-        async with self.access_transaction() as conn:
+        async with self.paid_transaction(conn) as conn:
             if not await self._admin_in_transaction(conn,admin_id):return False
             row=await (await conn.execute('SELECT revision FROM private_users WHERE user_id=?',(user_id,))).fetchone()
             if expected_revision is not None and (not row or row[0]!=expected_revision):return False

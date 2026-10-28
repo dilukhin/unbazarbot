@@ -18,6 +18,8 @@ from voicebot.runtime import InstanceLock
 
 class MaintenanceTests(unittest.TestCase):
     def setUp(self):
+        lease=patch('scripts.update_bot.main_revision',return_value='a'*40)
+        lease.start();self.addCleanup(lease.stop)
         self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name)
         self.database=self.root/'bot.sqlite3'
         self.conn=sqlite3.connect(self.database)
@@ -82,9 +84,11 @@ class MaintenanceTests(unittest.TestCase):
         previous=releases/'old';previous.mkdir();new=releases/'new';new.mkdir()
         current=self.root/'current';current.symlink_to(previous,target_is_directory=True)
         config=self.root/'config.yaml';config.write_text('test');os.chmod(config,0o600)
-        env=self.root/'bot.env';env.write_text('test');os.chmod(env,0o600)
+        env=self.root/'bot.env';env.write_text(f'CONFIG_PATH={config}\nDB_PATH={self.database}\n');os.chmod(env,0o600)
+        (new/'.ready').write_text(json.dumps({'revision':'a'*40,'files':{}}))
         args=SimpleNamespace(current=current,config=config,env_file=env,database=self.database,
-            backups=self.root/'backups',sudo=False,service='unbazarbot.service')
+            backups=self.root/'backups',sudo=False,service='unbazarbot.service',repo=self.root/'repo',revision='a'*40,
+            releases=releases)
         return args,previous,new
 
     def controller(self,args,*,fail=False):
@@ -94,6 +98,7 @@ class MaintenanceTests(unittest.TestCase):
             if 'WorkingDirectory' in ' '.join(command): return str(args.current)
             if 'ExecStart' in ' '.join(command): return str(args.current/'.venv/bin/python')
             if 'EnvironmentFiles' in ' '.join(command): return str(args.env_file)+' (ignore_errors=no)'
+            if 'KillMode' in ' '.join(command): return 'control-group'
             if 'ActiveState' in ' '.join(command): return 'inactive'
             if 'NRestarts' in ' '.join(command): return '0'
             if 'is-active' in command: return 'active'
@@ -105,12 +110,16 @@ class MaintenanceTests(unittest.TestCase):
 
     def test_successful_switch_stops_before_start_and_keeps_runtime(self):
         args,previous,new=self.args();operations,controller=self.controller(args)
+        cache=self.root/'routerai-prices.json';cache.write_text('synthetic snapshot');cache.chmod(0o600)
+        pause=self.root/'routerai-prices.json.paused';pause.touch(mode=0o600)
         with patch('scripts.update_bot.run',side_effect=controller),patch('scripts.update_bot.time.sleep'):
             apply(args,new)
         self.assertEqual(args.current.resolve(),new)
         self.assertLess(next(i for i,x in enumerate(operations) if 'stop' in x),next(i for i,x in enumerate(operations) if 'start' in x))
         copies=list(args.backups.rglob('bot.sqlite3'));self.assertEqual(len(copies),1)
         self.assertEqual(check_database(copies[0])['database'],'ok')
+        self.assertEqual((copies[0].parent/'routerai-prices.json').read_text(),'synthetic snapshot')
+        self.assertTrue((copies[0].parent/'routerai-prices.json.paused').exists())
 
     def test_failed_start_restores_code_without_overwriting_new_data_or_starting_old(self):
         args,previous,new=self.args();operations,controller=self.controller(args,fail=True)
@@ -127,6 +136,38 @@ class MaintenanceTests(unittest.TestCase):
             with self.assertRaises(OSError): apply(args,new)
         self.assertEqual(args.current.resolve(),previous)
         self.assertEqual(sum('start' in call for call in operations),1)
+
+    def test_main_moved_since_prepare_does_not_stop_service(self):
+        args,previous,new=self.args()
+        with patch('scripts.update_bot.main_revision',return_value='b'*40),patch('scripts.update_bot.run') as run:
+            with self.assertRaisesRegex(ValueError,'main изменился'):
+                apply(args,new)
+            run.assert_not_called()
+        self.assertEqual(args.current.resolve(),previous)
+
+    def test_money_database_cannot_apply_legacy_release_before_stop(self):
+        self.conn.execute('CREATE TABLE money_accounts(id INTEGER)');self.conn.commit()
+        args,previous,new=self.args()
+        with patch('scripts.update_bot.run') as run:
+            with self.assertRaisesRegex(ValueError,'без денежного договора'):
+                apply(args,new)
+            run.assert_not_called()
+        self.assertEqual(args.current.resolve(),previous)
+
+    def test_wrong_kill_mode_refuses_before_stop(self):
+        args,previous,new=self.args();operations,controller=self.controller(args)
+        def run(command,**kwargs):
+            return 'process' if 'KillMode' in ' '.join(map(str,command)) else controller(command,**kwargs)
+        with patch('scripts.update_bot.run',side_effect=run):
+            with self.assertRaisesRegex(ValueError,'KillMode'):
+                apply(args,new)
+        self.assertFalse(any('stop' in call for call in operations))
+
+    def test_modified_prepared_release_refused_before_stop(self):
+        args,previous,new=self.args();(new/'bot.py').write_text('# changed after prepare')
+        with patch('scripts.update_bot.run') as run:
+            with self.assertRaisesRegex(ValueError,'изменён'):apply(args,new)
+            run.assert_not_called()
 
     def test_revision_mismatch_does_not_prepare_or_stop_anything(self):
         args=SimpleNamespace(revision='a'*40)

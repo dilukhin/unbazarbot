@@ -238,6 +238,8 @@ class PriceCatalog:
             if self.path.exists():
                 with self.path.open("rb") as stream:
                     disk_raw = stream.read(MAX_BYTES + 1)
+                if disk_raw.startswith(b'SQLite format 3\x00'):
+                    raise TariffError('cache path points to SQLite; replacement forbidden')
                 try:
                     disk = parse_document(disk_raw, now=self.clock())
                 except TariffError:

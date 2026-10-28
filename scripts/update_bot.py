@@ -17,6 +17,8 @@ import uuid
 sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
 from scripts.maintenance import backup_database,private_file
 from voicebot.runtime import InstanceLock
+from voicebot.release_contract import ensure_release_compatible, CONTRACT_FILE
+from voicebot.runtime_paths import validate_tariff_path
 
 ORIGINS={'https://github.com/dilukhin/unbazarbot.git','https://github.com/dilukhin/unbazarbot',
          'git@github.com:dilukhin/unbazarbot.git','ssh://git@github.com/dilukhin/unbazarbot.git'}
@@ -70,6 +72,9 @@ def external_runtime(args,release):
     for key,path in (('CONFIG_PATH',args.config),('DB_PATH',args.database)):
         if not values.get(key) or not Path(values[key]).is_absolute() or Path(values[key]).resolve()!=path.resolve():
             raise ValueError('В рабочем .env нужны совпадающие абсолютные CONFIG_PATH и DB_PATH')
+    validate_tariff_path(values.get('TARIFF_CACHE_PATH') or str(args.database.resolve().parent/'routerai-prices.json'),
+        database=args.database, config=args.config, env_file=args.env_file,
+        lock=values.get('LOCK_PATH'), application_roots=(args.repo,args.releases))
 
 
 def code_hashes(release):
@@ -79,6 +84,15 @@ def code_hashes(release):
         if path.is_file() and not any(part in {'.venv','__pycache__','.pytest_cache','.ready'} for part in parts):
             result[str(path.relative_to(release))]=hashlib.sha256(path.read_bytes()).hexdigest()
     return result
+
+
+def verify_prepared(release,revision):
+    ready=release/'.ready'
+    if not ready.is_file() or ready.is_symlink():
+        raise ValueError('Выпуск не подготовлен')
+    manifest=json.loads(ready.read_text())
+    if manifest.get('revision')!=revision or manifest.get('files')!=code_hashes(release):
+        raise ValueError('Подготовленный выпуск изменён')
 
 
 def prepare(args,revision):
@@ -94,13 +108,14 @@ def prepare(args,revision):
         ready=release/'.ready'
         if not ready.is_file():
             raise ValueError('Незавершённый выпуск уже существует; проверьте его отдельно')
-        manifest=json.loads(ready.read_text())
-        if manifest.get('revision')!=revision or manifest.get('files')!=code_hashes(release):
-            raise ValueError('Подготовленный выпуск изменён')
+        verify_prepared(release,revision)
+        ensure_release_compatible(args.database,release)
     else:
         release.mkdir(mode=0o700)
         data=run(['git','-C',args.repo,'archive','--format=tar',revision],binary=True)
         extract_archive(data,release)
+        # Inspect the candidate before executing any of its code or migrations.
+        ensure_release_compatible(args.database,release)
         (release/'REVISION').write_text(revision+'\n')
         run([sys.executable,'-m','venv',release/'.venv'])
         python=release/'.venv/bin/python'
@@ -109,6 +124,8 @@ def prepare(args,revision):
         run([python,'-m','pytest','-q'],cwd=release)
         (release/'.ready').write_text(json.dumps({'revision':revision,'files':code_hashes(release)}))
     python=release/'.venv/bin/python'
+    if (release/CONTRACT_FILE).exists():
+        run([python,release/'scripts/media_doctor.py'],cwd=release)
     run([python,release/'scripts/maintenance.py','trial','--config',args.config,
          '--database',args.database,'--env-file',args.env_file],cwd=release)
     return release
@@ -131,7 +148,26 @@ def private_copy(source,target):
         shutil.copyfileobj(src,dst)
 
 
+def backup_tariffs(args,backup):
+    from dotenv import dotenv_values
+    values=dotenv_values(args.env_file)
+    cache=validate_tariff_path(
+        values.get('TARIFF_CACHE_PATH') or str(args.database.resolve().parent/'routerai-prices.json'),
+        database=args.database,config=args.config,env_file=args.env_file,lock=values.get('LOCK_PATH'))
+    # Locks are process leases, not state. Preserve the last document and pause
+    # marker after service stop; neither is restored automatically on failure.
+    for source,name in ((cache,'routerai-prices.json'),(Path(str(cache)+'.paused'),'routerai-prices.json.paused')):
+        if source.exists():
+            private_file(source)
+            private_copy(source,backup/name)
+
+
 def apply(args,release):
+    if main_revision(args.repo)!=args.revision:
+        raise ValueError('main изменился после prepare; повторите check до остановки службы')
+    ensure_release_compatible(args.database,release)
+    verify_prepared(release,args.revision)
+    external_runtime(args,release)
     current=args.current.absolute()
     if not current.is_symlink() or not current.resolve().is_dir():
         raise ValueError('Сначала настройте управляемую ссылку current и службу по инструкции')
@@ -151,6 +187,8 @@ def apply(args,release):
     environment=ctl('show','--property=EnvironmentFiles','--value')
     if environment!=str(args.env_file)+' (ignore_errors=no)':
         raise ValueError('Нужен единственный EnvironmentFile с рабочими путями')
+    if ctl('show','--property=KillMode','--value')!='control-group':
+        raise ValueError('Для остановки медиапроцессов требуется KillMode=control-group')
     if ctl('is-active')!='active':
         raise ValueError('Исходная служба не активна; требуется отдельная диагностика')
     args.backups.mkdir(parents=True,mode=0o700,exist_ok=True)
@@ -168,6 +206,7 @@ def apply(args,release):
     # Если ошибка здесь, новый процесс ещё не запускался: прежнюю службу можно вернуть.
     try:
         backup_database(args.database,backup/'bot.sqlite3')
+        backup_tariffs(args,backup)
         switch_link(current,release)
     except BaseException:
         if current.resolve()!=previous:
@@ -191,7 +230,7 @@ def apply(args,release):
               'Рабочая база сохранена. Для восстановления следуйте инструкции; копии: '+str(backup),file=sys.stderr)
         raise
     print('Установлен выпуск '+release.name+'. Служба активна, SQLite проверена.\n'
-          'Подтвердите /about, /system и одно тестовое голосовое в Telegram. Копии: '+str(backup))
+          'Подтвердите команды и кеш в Telegram; платная проверка требует отдельного допуска. Копии: '+str(backup))
 
 
 def main():

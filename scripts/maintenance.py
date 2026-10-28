@@ -26,11 +26,14 @@ def readonly(path):
 
 
 def check_database(path):
+    from voicebot.release_contract import financial_schema
     with closing(readonly(path)) as conn:
         if conn.execute('PRAGMA quick_check').fetchall()!=[('ok',)]:
             raise ValueError('Проверка SQLite не прошла')
         tables={row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    return {'database':'ok','private_access':'private_users' in tables,'budget':'paid_calls' in tables}
+    return {'database':'ok','private_access':'private_users' in tables,'budget':'paid_calls' in tables,
+            'financial_schema':financial_schema(path),'money':'money_accounts' in tables,
+            'financial':'financial_calls' in tables}
 
 
 def backup_database(source,target):
@@ -56,6 +59,7 @@ def backup_database(source,target):
 
 def health(config,database,env_file=None):
     from voicebot.config import load_config
+    from voicebot.release_contract import ensure_supported_database
     private_file(config)
     cfg=load_config(config)
     if not cfg.admin_user_ids:
@@ -67,6 +71,7 @@ def health(config,database,env_file=None):
         if not values.get('TELEGRAM_BOT_TOKEN') or not values.get('ROUTERAI_API_KEY'):
             raise ValueError('Не заданы необходимые секреты')
     private_file(database)
+    ensure_supported_database(database)
     return {'config':'ok',**check_database(database)}
 
 

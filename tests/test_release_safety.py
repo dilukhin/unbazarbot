@@ -117,16 +117,18 @@ class ReleaseContractTests(unittest.IsolatedAsyncioTestCase):
             db=Database(working,MoneySettings(global_daily_rub='10'))
             await db.open()
             try:
-                await db.upsert_config_admins({1});await db.touch_money_user(7)
-                await db.adjust_money('extra','user',7,'12.345678901',admin_id=1)
-                await db.reserve_money('unknown','user',7,'1.23456789001')
-                balance=await db.money_balance('user',7)
+                # The snapshot includes last_seen: observe both sides at the same
+                # explicit time, independently of a wall-clock second boundary.
+                await db.upsert_config_admins({1});await db.touch_money_user(7,at=NOW)
+                await db.adjust_money('extra','user',7,'12.345678901',admin_id=1,at=NOW)
+                await db.reserve_money('unknown','user',7,'1.23456789001',at=NOW)
+                balance=await db.money_balance('user',7,at=NOW)
                 count=(await (await db.db.execute('SELECT COUNT(*) FROM money_journal')).fetchone())[0]
                 self.assertEqual(balance['held_atoms'],to_atoms('1.23456789001',rub=True))
                 self.assertEqual((await db.access_subject('user',7))['status'],'approved')
                 self.assertEqual((await db.cached_transcript('file','alias','synthetic/asr'))['transcript'],'artificial text')
                 await db.close();await db.open()
-                again=await db.money_balance('user',7)
+                again=await db.money_balance('user',7,at=NOW)
                 self.assertEqual(again,balance)
                 self.assertEqual((await (await db.db.execute('SELECT COUNT(*) FROM money_journal')).fetchone())[0],count)
                 self.assertEqual((await (await db.db.execute("SELECT cost,cost_rub FROM transcription_jobs WHERE id='old'")).fetchone())[:],(0.123,None))

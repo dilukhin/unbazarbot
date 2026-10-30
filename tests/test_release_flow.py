@@ -87,7 +87,10 @@ class ReleaseFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((row['kind'],row['subject_id'],row['state']),('user',1,'settled'))
             self.assertEqual(row['final_rub'],'0.00012345678901');self.assertEqual(row['generation_id'],'gen_synthetic')
             self.assertGreater(Decimal(row['bound_rub']),Decimal(row['final_rub']))
-            balance=await self.db.money_balance('user',1)
+            # Compare persistence at one observation time: last_seen is expected
+            # to change if the balance is inspected at a later wall-clock second.
+            observed_at=datetime.now(timezone.utc)
+            balance=await self.db.money_balance('user',1,at=observed_at)
             self.assertEqual(balance['free_atoms'],to_atoms('1000')-to_atoms('0.00012345678901',rub=True))
             self.assertEqual(balance['held_atoms'],0)
             self.assertEqual((await self.db.money_balance('group',-10))['free_atoms'],0)
@@ -96,7 +99,7 @@ class ReleaseFlowTests(unittest.IsolatedAsyncioTestCase):
             await self.db.recover_paid_calls();await self.db.recover_financial_calls()
             await transcribe_message_media(message,message,self.ctx,self.bot,self.config.default_model)
             self.assertEqual(len(self.requests),2);self.assertEqual(len(self.downloads),1)
-            self.assertEqual(await self.db.money_balance('user',1),balance)
+            self.assertEqual(await self.db.money_balance('user',1,at=observed_at),balance)
             self.assertIn('из кеша',self.bot.session.calls[-1].text)
 
     async def test_trf_revoke_during_real_audio_preparation_refunds_without_provider(self):

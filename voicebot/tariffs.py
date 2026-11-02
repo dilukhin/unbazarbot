@@ -9,7 +9,7 @@ import re
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal, localcontext
+from decimal import Decimal, localcontext, ROUND_CEILING
 from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Mapping
@@ -73,6 +73,8 @@ class ModelTariff:
     api: str | None
     ceilings: tuple[Rate, ...] = ()
     endpoints: tuple[tuple[Rate, ...], ...] = ()
+    reservation_floor: Decimal = Decimal(0)
+    reservation_quantum: Decimal = Decimal(0)
 
 
 @dataclass(frozen=True)
@@ -131,6 +133,42 @@ def content_hash(content) -> str:
     return "sha256:" + hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
+def _documented_audio(model_id, value, ceilings):
+    profile = "routerai-whisper-turbo-seconds-v1"
+    api = "audio/transcriptions"
+    expected_units = {"prompt":"token", "seconds":"second", "completion":"token"}
+    if (model_id != "openai/whisper-large-v3-turbo" or value.get("api") != api
+            or value.get("architecture") != {"input_modalities":["audio"], "output_modalities":["transcription"]}
+            or set(ceilings) != set(expected_units)
+            or any(ceilings[k].unit != u or ceilings[k].rub != Decimal("0" if k == "completion" else "0.0013")
+                   for k,u in expected_units.items())):
+        raise TariffError("unsupported documented billing scope")
+    eps=value["endpoints"]
+    if len(eps)!=2 or {e["provider"] for e in eps}!={"deepinfra","groq"}:
+        raise TariffError("documented billing routes changed")
+    routes=[];rates=[]
+    for ep in sorted(eps,key=lambda e:e["provider"]):
+        p=ep["pricing"]
+        if ep.get("supported_apis") and api not in ep["supported_apis"]:
+            raise TariffError("documented API contradicted by endpoint")
+        if (set(p)!=set(expected_units) or ep["pricing_units"]!=expected_units
+                or _price(p["seconds"])<=0 or _price(p["prompt"])!=_price(p["seconds"])
+                or _price(p["completion"])!=0):
+            raise TariffError("documented billing price shape changed")
+        routes.append({"provider":ep["provider"],"components":{"seconds":{"rub":p["seconds"],"unit":"second"}}})
+        rates.append((Rate("seconds","second",_price(p["seconds"])),))
+    expected={"profile":profile,"api":api,"basis":"documented-duration",
+        "sources":["https://routerai.ru/models/openai/whisper-large-v3-turbo",
+                   "https://routerai.ru/docs/guides/overview/multimodal/speech-to-text.md",
+                   "https://routerai.ru/api/openapi.json"],
+        "openapi_sha256":"7430c049de0f226259a3e135697143df10bebf3cc1f3e8ca67b79a82cd0fd40d",
+        "reservation":{"floor_seconds":"60","quantum_seconds":"1"},
+        "ceiling":{"rub":"0.0013","unit":"second"},"routes":routes}
+    if value["billing_contract"]!=expected:
+        raise TariffError("untrusted documented billing contract")
+    return ModelTariff(model_id,"available",None,api,(ceilings["seconds"],),tuple(rates),Decimal(60),Decimal(1))
+
+
 def _model(model_id, value) -> ModelTariff:
     if not isinstance(value, dict) or value.get("id") != model_id:
         raise TariffError("invalid model identity")
@@ -163,7 +201,7 @@ def _model(model_id, value) -> ModelTariff:
         if ep.get("source_url") != f"{SOURCE}/{model_id}/endpoints":
             raise TariffError("untrusted endpoint source")
         apis = ep.get("supported_apis")
-        if ep.get("variable_pricing") is not False or not isinstance(apis, list) or not all(isinstance(x, str) for x in apis) or api not in apis:
+        if ep.get("variable_pricing") is not False or not isinstance(apis, list) or not all(isinstance(x, str) for x in apis) or (api not in apis and "billing_contract" not in value):
             return ModelTariff(model_id, "unsafe", "variable-or-unknown-route", api)
         pricing, units = ep.get("pricing"), ep.get("pricing_units")
         if not isinstance(pricing, dict) or not pricing or not isinstance(units, dict):
@@ -176,6 +214,8 @@ def _model(model_id, value) -> ModelTariff:
                 return ModelTariff(model_id, "unsafe", "unapproved-unit-or-price", api)
             rates.append(Rate(component, bound.unit, rate))
         endpoints.append(tuple(rates))
+    if "billing_contract" in value:
+        return _documented_audio(model_id,value,ceilings)
     return ModelTariff(model_id, "available", None, api, tuple(ceilings.values()), tuple(endpoints))
 
 
@@ -336,7 +376,11 @@ class PriceCatalog:
                 quantity = quantities.get(rate.component)
                 if not isinstance(quantity, Quantity) or quantity.unit != rate.unit:
                     raise TariffError("missing or incompatible upper usage bound")
-                total += rate.rub * quantity.amount
+                count=quantity.amount
+                if rate.unit == "second" and model.reservation_quantum:
+                    count=max(model.reservation_floor,
+                        (count/model.reservation_quantum).to_integral_value(rounding=ROUND_CEILING)*model.reservation_quantum)
+                total += rate.rub * count
             return total
         try:
             with localcontext() as context:

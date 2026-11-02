@@ -19,6 +19,18 @@ from tests.tariff_fixtures import GOLDEN, NOW, catalog, document
 
 
 class ContractTests(unittest.TestCase):
+    def test_billing_review_never_authorizes_even_if_outer_status_claims_available(self):
+        for review in ({'state':'candidate','financial_authorization':False},
+                       {'state':'approved','financial_authorization':True}, None):
+            value=document()
+            value['content']['models']['synthetic/asr']['billing_review']=review
+            value['snapshot_id']=content_hash(value['content'])
+            service=PriceCatalog('unused',clock=lambda:NOW)
+            service.snapshot=parse_document(json.dumps(value).encode(),now=NOW)
+            estimate=service.estimate_audio('synthetic/asr',60)
+            self.assertFalse(estimate.available)
+            self.assertEqual(estimate.reason,'billing-contract-unconfirmed')
+
     def test_virtual_model_is_preserved_as_unpriced(self):
         value = document()
         model = copy.deepcopy(value['content']['models']['synthetic/asr'])

@@ -137,6 +137,9 @@ def _model(model_id, value) -> ModelTariff:
     status = value.get("status")
     if status == "unpriced":
         return ModelTariff(model_id, "unpriced", "publisher-unpriced", value.get("api"))
+    if "billing_review" in value:
+        # Review annotations are proposals, never a financial contract.
+        return ModelTariff(model_id, "unsafe", "billing-contract-unconfirmed", value.get("api"))
     if status != "available" or value.get("reason") is not None:
         return ModelTariff(model_id, "incompatible", "unknown-model-status", None)
     architecture = value.get("architecture")

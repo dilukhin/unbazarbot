@@ -1,0 +1,126 @@
+{
+  "schema": 1,
+  "owner": "agent-toolchain:routerai-prices:v1",
+  "publisher": "dilukhin/agent-toolchain",
+  "_managed_notice": "Managed RouterAI prices; do not edit. See docs/routerai_prices_contract_ru.md.",
+  "state": "published",
+  "source_url": "https://routerai.ru/api/v1/models",
+  "source_checked_at": "2026-11-02T10:00:00Z",
+  "snapshot_id": "sha256:35dd01ba1bd98452a56e3bd175268d32db74a8874683219f410ebd20cf111dec",
+  "content": {
+    "currency": "RUB",
+    "models": {
+      "openai/whisper-large-v3-turbo": {
+        "id": "openai/whisper-large-v3-turbo",
+        "status": "available",
+        "reason": null,
+        "architecture": {
+          "input_modalities": [
+            "audio"
+          ],
+          "output_modalities": [
+            "transcription"
+          ]
+        },
+        "catalog_pricing": {},
+        "catalog_pricing_units": {},
+        "api": "audio/transcriptions",
+        "endpoints": [
+          {
+            "provider": "deepinfra",
+            "pricing": {
+              "prompt": "0.0003",
+              "seconds": "0.0003",
+              "completion": "0"
+            },
+            "pricing_units": {
+              "prompt": "token",
+              "seconds": "second",
+              "completion": "token"
+            },
+            "supported_apis": [],
+            "variable_pricing": false,
+            "source_url": "https://routerai.ru/api/v1/models/openai/whisper-large-v3-turbo/endpoints"
+          },
+          {
+            "provider": "groq",
+            "pricing": {
+              "prompt": "0.001",
+              "seconds": "0.001",
+              "completion": "0"
+            },
+            "pricing_units": {
+              "prompt": "token",
+              "seconds": "second",
+              "completion": "token"
+            },
+            "supported_apis": [],
+            "variable_pricing": false,
+            "source_url": "https://routerai.ru/api/v1/models/openai/whisper-large-v3-turbo/endpoints"
+          }
+        ],
+        "price_ceilings": {
+          "prompt": {
+            "unit": "token",
+            "rub": "0.0013"
+          },
+          "seconds": {
+            "unit": "second",
+            "rub": "0.0013"
+          },
+          "completion": {
+            "unit": "token",
+            "rub": "0"
+          }
+        },
+        "billing_contract": {
+          "profile": "routerai-whisper-turbo-seconds-v1",
+          "api": "audio/transcriptions",
+          "basis": "documented-duration",
+          "sources": [
+            "https://routerai.ru/models/openai/whisper-large-v3-turbo",
+            "https://routerai.ru/docs/guides/overview/multimodal/speech-to-text.md",
+            "https://routerai.ru/api/openapi.json"
+          ],
+          "openapi_sha256": "7430c049de0f226259a3e135697143df10bebf3cc1f3e8ca67b79a82cd0fd40d",
+          "reservation": {
+            "floor_seconds": "60",
+            "quantum_seconds": "1"
+          },
+          "ceiling": {
+            "rub": "0.0013",
+            "unit": "second"
+          },
+          "routes": [
+            {
+              "provider": "deepinfra",
+              "components": {
+                "seconds": {
+                  "rub": "0.0003",
+                  "unit": "second"
+                }
+              }
+            },
+            {
+              "provider": "groq",
+              "components": {
+                "seconds": {
+                  "rub": "0.001",
+                  "unit": "second"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "published_at": "2026-11-02T10:01:00Z",
+  "content_changed_at": "2026-11-02T10:01:00Z",
+  "validation": {
+    "status": "success",
+    "workflow": "validate.yml",
+    "candidate_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "run_id": 1
+  }
+}

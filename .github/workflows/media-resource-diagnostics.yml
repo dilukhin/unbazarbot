@@ -51,11 +51,11 @@ jobs:
               return proc
           async def run():
               global allocator
-              for profile in ('baseline', 'arena1'):
+              for profile in ('arena1',):
                   allocator = None if profile == 'baseline' else '1'
                   failures = []
                   with patch('asyncio.create_subprocess_exec', side_effect=tracked):
-                      for iteration in range(30):
+                      for iteration in range(150):
                           records.clear()
                           try:
                               await check_media()
@@ -66,6 +66,6 @@ jobs:
                               print(json.dumps(item), flush=True)
                           else:
                               print(json.dumps({'profile': profile, 'iteration': iteration, 'media': 'ok'}), flush=True)
-                  print('DIAGNOSTIC_SUMMARY ' + json.dumps({'profile': profile, 'checks': 30, 'failed': len(failures), 'reasons': [x['reason'] for x in failures], 'no_paid_calls': True}), flush=True)
+                  print('DIAGNOSTIC_SUMMARY ' + json.dumps({'profile': profile, 'checks': 150, 'failed': len(failures), 'reasons': [x['reason'] for x in failures], 'no_paid_calls': True}), flush=True)
           asyncio.run(run())
           PY

@@ -33,6 +33,7 @@ jobs:
           print(json.dumps({'cpus': os.cpu_count(), 'synthetic_only': True, 'production_limits_unchanged': True}), flush=True)
           original = asyncio.create_subprocess_exec
           records = []
+          allocator = None
           class Tap:
               def __init__(self, stream, record):
                   self.stream, self.record = stream, record
@@ -41,25 +42,30 @@ jobs:
                   self.record['stderr'].extend(data[:max(0, 65536-len(self.record['stderr']))])
                   return data
           async def tracked(*args, **kwargs):
+              if allocator:
+                  kwargs['env'] = {**kwargs['env'], 'MALLOC_ARENA_MAX': allocator}
               proc = await original(*args, **kwargs)
               record = {'command': [str(a) for a in args], 'stderr': bytearray()}
               records.append(record)
               proc.stderr = Tap(proc.stderr, record)
               return proc
           async def run():
-              failures = []
-              with patch('asyncio.create_subprocess_exec', side_effect=tracked):
-                  for iteration in range(30):
-                      records.clear()
-                      try:
-                          await check_media()
-                      except AudioError as exc:
-                          last = records[-1] if records else {'command': [], 'stderr': b''}
-                          item = {'iteration': iteration, 'reason': exc.code, 'command': last['command'], 'stderr': bytes(last['stderr']).decode(errors='replace')[:6000]}
-                          failures.append(item)
-                          print(json.dumps(item), flush=True)
-                      else:
-                          print(json.dumps({'iteration': iteration, 'media': 'ok'}), flush=True)
-              print('DIAGNOSTIC_SUMMARY ' + json.dumps({'checks': 30, 'failed': len(failures), 'reasons': [x['reason'] for x in failures], 'no_paid_calls': True}), flush=True)
+              global allocator
+              for profile in ('baseline', 'arena1'):
+                  allocator = None if profile == 'baseline' else '1'
+                  failures = []
+                  with patch('asyncio.create_subprocess_exec', side_effect=tracked):
+                      for iteration in range(30):
+                          records.clear()
+                          try:
+                              await check_media()
+                          except AudioError as exc:
+                              last = records[-1] if records else {'command': [], 'stderr': b''}
+                              item = {'profile': profile, 'iteration': iteration, 'reason': exc.code, 'command': last['command'], 'stderr': bytes(last['stderr']).decode(errors='replace')[:6000]}
+                              failures.append(item)
+                              print(json.dumps(item), flush=True)
+                          else:
+                              print(json.dumps({'profile': profile, 'iteration': iteration, 'media': 'ok'}), flush=True)
+                  print('DIAGNOSTIC_SUMMARY ' + json.dumps({'profile': profile, 'checks': 30, 'failed': len(failures), 'reasons': [x['reason'] for x in failures], 'no_paid_calls': True}), flush=True)
           asyncio.run(run())
           PY

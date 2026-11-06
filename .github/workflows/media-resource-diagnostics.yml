@@ -1,0 +1,65 @@
+name: Диагностика ограниченной медиасреды
+on:
+  push:
+    branches: [work/media-resource-diagnostics-20261106]
+permissions:
+  contents: read
+jobs:
+  synthetic-media:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.lock
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg util-linux
+      - name: Повторить штатную проверку и собрать только искусственную диагностику
+        run: |
+          python - <<'PY'
+          import asyncio
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          from unittest.mock import patch
+          from scripts.media_doctor import check_media
+          from voicebot.audio_validation import AudioError
+
+          for binary in ('ffmpeg', 'ffprobe', 'prlimit'):
+              result = subprocess.run([binary, '-version' if binary != 'prlimit' else '--version'], capture_output=True, text=True)
+              print(json.dumps({'tool': binary, 'version': result.stdout.splitlines()[0]}), flush=True)
+          print(json.dumps({'cpus': os.cpu_count(), 'synthetic_only': True, 'production_limits_unchanged': True}), flush=True)
+          original = asyncio.create_subprocess_exec
+          records = []
+          class Tap:
+              def __init__(self, stream, record):
+                  self.stream, self.record = stream, record
+              async def read(self, count):
+                  data = await self.stream.read(count)
+                  self.record['stderr'].extend(data[:max(0, 65536-len(self.record['stderr']))])
+                  return data
+          async def tracked(*args, **kwargs):
+              proc = await original(*args, **kwargs)
+              record = {'command': [str(a) for a in args], 'stderr': bytearray()}
+              records.append(record)
+              proc.stderr = Tap(proc.stderr, record)
+              return proc
+          async def run():
+              failures = []
+              with patch('asyncio.create_subprocess_exec', side_effect=tracked):
+                  for iteration in range(30):
+                      records.clear()
+                      try:
+                          await check_media()
+                      except AudioError as exc:
+                          last = records[-1] if records else {'command': [], 'stderr': b''}
+                          item = {'iteration': iteration, 'reason': exc.code, 'command': last['command'], 'stderr': bytes(last['stderr']).decode(errors='replace')[:6000]}
+                          failures.append(item)
+                          print(json.dumps(item), flush=True)
+                      else:
+                          print(json.dumps({'iteration': iteration, 'media': 'ok'}), flush=True)
+              print('DIAGNOSTIC_SUMMARY ' + json.dumps({'checks': 30, 'failed': len(failures), 'reasons': [x['reason'] for x in failures], 'no_paid_calls': True}), flush=True)
+          asyncio.run(run())
+          PY

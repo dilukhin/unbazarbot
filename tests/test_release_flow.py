@@ -17,7 +17,7 @@ from aiogram.types import Chat, Document, Message, User, Voice
 from scripts.media_doctor import check_media
 from tests.test_access import RecordingSession
 from tests.tariff_fixtures import catalog
-from voicebot.audio_validation import prepare_audio
+from voicebot.audio_validation import AudioError, prepare_audio
 from voicebot.config import load_config
 from voicebot.db import Database
 from voicebot.handlers import AppContext, media_auto_or_private, transcribe_message_media
@@ -123,7 +123,15 @@ class ReleaseFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_standalone_operator_media_preflight_uses_same_resource_profile(self):
         with patch('httpx.AsyncClient') as network:
-            self.assertEqual(await check_media(),{'media':'ok','formats':['ogg','mp3','wav','flac'],'network':False})
+            # FFmpeg 8's input scheduler intermittently failed under the AS cap;
+            # exercise fresh processes repeatedly, without relaxing the limits.
+            for iteration in range(5):
+                with self.subTest(iteration=iteration):
+                    try:
+                        result=await check_media()
+                    except AudioError as exc:
+                        self.fail('Synthetic media preflight: '+exc.code)
+                    self.assertEqual(result,{'media':'ok','formats':['ogg','mp3','wav','flac'],'network':False})
         network.assert_not_called()
 
 

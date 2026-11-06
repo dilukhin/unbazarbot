@@ -58,7 +58,10 @@ async def _run(binary, args, max_bytes):
                     '--fsize='+str(max_bytes),'--nofile=64','--nproc=256','--',executable,*args,
                     stdin=asyncio.subprocess.DEVNULL,stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,start_new_session=True,
-                    env={'PATH':os.defpath,'LANG':'C','LC_ALL':'C','OMP_NUM_THREADS':'1','OPENBLAS_NUM_THREADS':'1'})
+                    # glibc's per-thread malloc arenas reserve address space even
+                    # for tiny inputs. Keep one arena within the existing AS cap.
+                    env={'PATH':os.defpath,'LANG':'C','LC_ALL':'C','OMP_NUM_THREADS':'1','OPENBLAS_NUM_THREADS':'1',
+                         'MALLOC_ARENA_MAX':'1'})
     async def bounded(stream, cap):
         result=bytearray()
         while chunk:=await stream.read(8192):
